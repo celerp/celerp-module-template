@@ -74,16 +74,16 @@ def lint(folder: Path) -> list[str]:
             problems.append(f"manifest missing required field: {field!r}")
     name = str(manifest.get("name", ""))
     if name.startswith("celerp-"):
-        problems.append(f"name {name!r} uses the reserved `celerp-` namespace — "
+        problems.append(f"name {name!r} uses the reserved `celerp-` namespace - "
                         "prefix with your own vendor name")
     if not (manifest.get("slots") or manifest.get("api_routes") or manifest.get("ui_routes")):
-        problems.append("manifest declares no slots and no routes — the module does nothing")
+        problems.append("manifest declares no slots and no routes - the module does nothing")
 
     for py_file in folder.rglob("*.py"):
         hits = _protected_imports(py_file)
         for h in sorted(hits):
             problems.append(f"{py_file.relative_to(folder)}: imports protected internal {h!r} "
-                            "— the loader will reject this module")
+                            "- the loader will reject this module")
     return problems
 
 

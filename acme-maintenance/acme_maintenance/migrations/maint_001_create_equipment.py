@@ -23,11 +23,14 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "acme_equipment",
-        sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("company_id", sa.String(36), nullable=False, index=True),
+        sa.Column("id", sa.Uuid(as_uuid=True), primary_key=True),
+        sa.Column("company_id", sa.Uuid(as_uuid=True),
+                  sa.ForeignKey("companies.id"), nullable=False, index=True),
         sa.Column("name", sa.String(200), nullable=False),
+        sa.Column("location", sa.String(200), nullable=False, server_default=""),
         sa.Column("serviced_at", sa.Date(), nullable=True),
         sa.Column("interval_days", sa.Integer(), nullable=False, server_default="90"),
+        sa.Column("last_cost", sa.Numeric(14, 2), nullable=False, server_default="0"),
         sa.Column("notes", sa.Text(), nullable=False, server_default=""),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
     )

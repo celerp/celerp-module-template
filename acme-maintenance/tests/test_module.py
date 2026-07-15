@@ -30,11 +30,11 @@ def test_manifest_is_well_formed():
     assert "nav" in m["slots"]
 
 
-def test_due_logic():
+def test_due_logic_and_status():
     from acme_maintenance.models import Equipment
     e = Equipment(company_id="c", name="Forklift", interval_days=30)
-    assert e.is_due()                                   # never serviced → due
+    assert e.is_due() and e.status() == "due"           # never serviced → due
     e.serviced_at = date.today() - timedelta(days=10)
-    assert not e.is_due()                               # serviced recently → not due
+    assert not e.is_due() and e.status() == "ok"        # serviced recently → not due
     e.serviced_at = date.today() - timedelta(days=40)
-    assert e.is_due()                                   # past the interval → due
+    assert e.is_due() and e.status() == "due"           # past the interval → due

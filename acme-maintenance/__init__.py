@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""acme-maintenance — the Celerp module template.
+"""acme-maintenance - the Celerp module template.
 
 Copy this whole folder, rename it, and you have a working Celerp module:
 an "Equipment Maintenance" log that adds a sidebar page for tracking
@@ -9,7 +9,7 @@ The loader reads PLUGIN_MANIFEST below to learn the module's identity, which
 extension slots it fills, and where its routes and migrations live. Everything
 the loader needs is in this one dict.
 
-NAMING: third-party modules must NOT use the `celerp-` prefix — that namespace
+NAMING: third-party modules must NOT use the `celerp-` prefix - that namespace
 is reserved for official modules so users can tell first-party from community
 at a glance. Prefix with your own name instead (here: `acme-`).
 """
@@ -27,7 +27,7 @@ PLUGIN_MANIFEST = {
     # Dotted paths to the inner package's route modules. The loader imports each
     # and calls setup_api_routes(app) / setup_ui_routes(app). Note the inner
     # package uses an underscore (acme_maintenance) even though the folder uses
-    # a hyphen (acme-maintenance) — Python packages can't have hyphens.
+    # a hyphen (acme-maintenance) - Python packages can't have hyphens.
     "api_routes": "acme_maintenance.routes",
     "ui_routes": "acme_maintenance.ui_routes",
 
