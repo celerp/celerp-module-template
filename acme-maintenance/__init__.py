@@ -22,6 +22,9 @@ PLUGIN_MANIFEST = {
     "description": "Track company equipment and see what is due for service.",
     "license": "MIT",
     "author": "Acme",
+    # The oldest Celerp this module is built and tested against. Celerp refuses
+    # to install it on anything older, with a message telling the user to update.
+    "min_celerp_version": "1.4.2",
 
     # ── Routes ────────────────────────────────────────────────────────────────
     # Dotted paths to the inner package's route modules. The loader imports each

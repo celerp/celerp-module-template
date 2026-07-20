@@ -12,7 +12,7 @@ reuses Celerp's own table JavaScript so the behavior matches the rest of the app
 
 Every feature in Celerp is a module on this same loader API - the built-in
 inventory, accounting, and manufacturing modules are built exactly like this
-one. See the full guide at <https://www.celerp.com/docs/modules>.
+one. See the full guide at <https://www.celerp.com/docs/modules.html>.
 
 ## What's here
 
@@ -26,6 +26,7 @@ acme-maintenance/               the module (copy and rename this whole folder)
                                 click-to-edit cells, bulk actions
     migrations/                 Alembic migration on the module's own branch
   tests/test_module.py          manifest + domain-logic tests, no app needed
+tests/test_lint.py              tests for lint.py itself
 lint.py                         check a module without installing the app
 ```
 
@@ -34,12 +35,14 @@ lint.py                         check a module without installing the app
 1. Copy the `acme-maintenance/` folder into your Celerp data directory's
    `modules/` folder:
    - **macOS**: `~/Library/Application Support/Celerp/celerp-data/modules/`
-   - **Linux**: `~/.config/celerp/celerp-data/modules/`
+   - **Linux**: `~/.config/Celerp/celerp-data/modules/`
    - **Windows**: `%APPDATA%\Celerp\celerp-data\modules\`
 
    That folder already contains Celerp's own seeded modules. Don't edit those,
    and don't reuse their names - drop your module in alongside them.
-2. In Celerp, open **Settings → Modules** and enable **Equipment Maintenance**.
+2. In Celerp, open the **Modules** section and enable **Equipment
+   Maintenance**. (You can skip step 1 entirely and use **Import Module**
+   there to add the folder directly.)
 3. Restart Celerp. A **Maintenance** entry appears under "Operations" in the
    sidebar. Open it, add a piece of equipment, mark it serviced.
 
@@ -54,6 +57,34 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
 3. Rename the table in `models.py` and the migration, prefixed with your name.
 4. `python lint.py your-thing/` before every restart - it runs the same checks
    the loader runs, so you catch mistakes in seconds instead of on a failed boot.
+   Rename the folder and the manifest `name` together: Celerp installs a module
+   under its manifest name whatever the folder is called, and lint says so if
+   the two drift apart.
+
+## Disclose what it touches
+
+If you list your module, users see two statements you write, labelled as your
+own declaration: what data it touches, and what network calls it makes. Write
+the true, specific answer. This module's would be:
+
+- **Data access**: reads and writes one table of its own (`acme_equipment`:
+  name, location, service dates), scoped to the current company. No access to
+  any other Celerp data.
+- **Network calls**: none outside Celerp itself. The page calls Celerp's own
+  local API on this machine; nothing reaches the internet.
+
+Put the same two statements in your module's README and in your directory
+listing, so a user reading either one sees the same answer.
+
+## List it, or sell it
+
+- **List it free**: open a pull request against
+  [community-modules](https://github.com/celerp/community-modules) adding one
+  catalog entry and one table row. Its README has the full bar a listing must
+  meet.
+- **Sell it**: paid modules go through Celerp's marketplace rather than the
+  community directory. The "Sell your module" section of the community-modules
+  README walks through it.
 
 ## What to reach for next
 
@@ -69,6 +100,10 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
 The module loader API is still evolving between releases. Build against the
 current release of Celerp; this template tracks it. If a future release changes
 the API, update against the latest template.
+
+`min_celerp_version` in the manifest is the oldest Celerp your module runs on.
+Celerp refuses to install a module on an older build and tells the user to
+update, so set it to the release you actually tested against.
 
 ## License
 

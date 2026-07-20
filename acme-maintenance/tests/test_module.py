@@ -19,6 +19,7 @@ manifest = importlib.import_module("__init__").PLUGIN_MANIFEST if False else Non
 
 def test_manifest_is_well_formed():
     import importlib.util
+    import re
     spec = importlib.util.spec_from_file_location(
         "acme_manifest", Path(__file__).resolve().parents[1] / "__init__.py")
     mod = importlib.util.module_from_spec(spec)
@@ -28,6 +29,8 @@ def test_manifest_is_well_formed():
     assert not m["name"].startswith("celerp-"), "celerp- prefix is reserved for official modules"
     assert m["api_routes"] and m["ui_routes"]
     assert "nav" in m["slots"]
+    # A dotted version, or Celerp's compatibility check cannot compare it.
+    assert re.fullmatch(r"\d+(\.\d+){0,2}", m["min_celerp_version"])
 
 
 def test_due_logic_and_status():
