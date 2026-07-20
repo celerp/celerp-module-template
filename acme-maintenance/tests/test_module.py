@@ -7,15 +7,11 @@ anywhere, and demonstrates the two things worth pinning: manifest shape and
 your own domain logic.
 """
 from datetime import date, timedelta
-import importlib
 import sys
 from pathlib import Path
 
 # Make the inner package importable when running this test standalone.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-manifest = importlib.import_module("__init__").PLUGIN_MANIFEST if False else None
-
 
 def test_manifest_is_well_formed():
     import importlib.util
