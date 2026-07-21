@@ -16,6 +16,7 @@ Exit 0 = clean, 1 = problems (printed).
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -25,19 +26,30 @@ PROTECTED = {
     "celerp.gateway", "celerp.connectors",
 }
 REQUIRED_FIELDS = ("name", "version", "display_name", "license")
+# min_celerp_version is optional, but when set it must be a dotted version so
+# the loader's comparison means something.
+MIN_VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
 
 
-def _load_manifest(init_file: Path) -> dict | None:
-    tree = ast.parse(init_file.read_text())
+def _load_manifest(init_file: Path) -> tuple[dict | None, str | None]:
+    """Return (manifest, error). A syntax error in `__init__.py` is the most
+    common first mistake, so it is reported by name instead of raised as a
+    traceback - the point of this script is to name the problem."""
+    try:
+        tree = ast.parse(init_file.read_text())
+    except SyntaxError as exc:
+        return None, f"could not parse the file (line {exc.lineno}: {exc.msg})"
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, f"could not be read ({exc})"
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 if isinstance(t, ast.Name) and t.id == "PLUGIN_MANIFEST":
                     try:
-                        return ast.literal_eval(node.value)
+                        return ast.literal_eval(node.value), None
                     except Exception:
-                        return None
-    return None
+                        return None, None
+    return None, None
 
 
 def _protected_imports(py_file: Path) -> set[str]:
@@ -65,7 +77,9 @@ def lint(folder: Path) -> list[str]:
     if not init_file.exists():
         return [f"{folder}: no __init__.py (a module folder must have one)"]
 
-    manifest = _load_manifest(init_file)
+    manifest, error = _load_manifest(init_file)
+    if error is not None:
+        return [f"{init_file}: {error}"]
     if manifest is None:
         return [f"{init_file}: no parseable PLUGIN_MANIFEST dict"]
 
@@ -76,6 +90,17 @@ def lint(folder: Path) -> list[str]:
     if name.startswith("celerp-"):
         problems.append(f"name {name!r} uses the reserved `celerp-` namespace - "
                         "prefix with your own vendor name")
+    # Celerp installs a module under its manifest name, whatever the folder is
+    # called, so renaming only one of the two lands the module somewhere the
+    # author is not looking (or on top of the module they copied).
+    if name and folder.name != name:
+        problems.append(f"folder name {folder.name!r} does not match "
+                        f"PLUGIN_MANIFEST['name'] {name!r} - Celerp installs modules "
+                        f"under the manifest name, so this would install as {name!r}")
+    min_version = manifest.get("min_celerp_version")
+    if min_version is not None and not MIN_VERSION_RE.match(str(min_version)):
+        problems.append(f"min_celerp_version {min_version!r} is not a dotted version "
+                        "number like '1.4.2' - the version check would not work")
     if not (manifest.get("slots") or manifest.get("api_routes") or manifest.get("ui_routes")):
         problems.append("manifest declares no slots and no routes - the module does nothing")
 
