@@ -80,8 +80,7 @@ listing, so a user reading either one sees the same answer.
 
 - **List it free**: open a pull request against
   [community-modules](https://github.com/celerp/community-modules) adding one
-  catalog entry and one table row. Its README has the full bar a listing must
-  meet.
+  catalog entry. Its README has the full bar a listing must meet.
 - **Sell it**: paid modules go through Celerp's marketplace rather than the
   community directory. The "Sell your module" section of the community-modules
   README walks through it.
@@ -97,9 +96,9 @@ listing, so a user reading either one sees the same answer.
 
 ## A note on compatibility
 
-The module loader API is still evolving between releases. Build against the
-current release of Celerp; this template tracks it. If a future release changes
-the API, update against the latest template.
+The module loader API can change between releases. Build against the current
+release of Celerp; this template tracks it. If a later release changes the API,
+update from the latest template.
 
 `min_celerp_version` in the manifest is the oldest Celerp your module runs on.
 Celerp refuses to install a module on an older build and tells the user to
