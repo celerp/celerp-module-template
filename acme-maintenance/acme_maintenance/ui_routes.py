@@ -172,8 +172,8 @@ def _content(items: list[dict], q: str, status: str) -> Div:
         cls="maint-filter-bar")
     if not shown:
         table_block = empty_state_cta(
-            title="No equipment matches" if (q or status) else "No equipment yet",
-            body="Add your first item below." if not (q or status) else "Try clearing filters.")
+            "No equipment matches. Try clearing filters." if (q or status)
+            else "No equipment yet. Add your first item below.")
     else:
         table_block = Div(_table(shown), table_pager(_TABLE_ID))
     return Div(
@@ -227,8 +227,8 @@ def setup_ui_routes(app) -> None:
             # The shared enhancers: Excel sort/pager, column+date filters, bulk toolbar.
             Script(ENHANCED_TABLE_JS), Script(COLUMN_FILTER_JS), Script(BULK_TOOLBAR_JS),
             cls="container maint-page")
-        return base_shell(body, title="Maintenance - Celerp", nav_active="maintenance",
-                          request=request)
+        return await base_shell(body, title="Maintenance - Celerp", nav_active="maintenance",
+                                request=request)
 
     async def _refresh(request: Request):
         items = await _fetch(request)
