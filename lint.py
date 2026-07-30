@@ -7,8 +7,12 @@ problems in seconds instead of on a failed boot:
   - the folder has an __init__.py with a PLUGIN_MANIFEST
   - the manifest has the required identity fields and at least one slot/route
   - the module name is not in the reserved `celerp-` namespace
+  - the manifest and its nav slots use only keys Celerp actually reads, so a
+    misspelled or invented key is not silently ignored at load time
   - no source file imports a protected celerp internal (revenue-gated; the
     loader rejects modules that do)
+  - no fragment is rendered with str(); FT.__str__ returns the element id, so
+    that sends the browser a word where its markup should be
 
 Usage:  python lint.py path/to/your-module-folder
 Exit 0 = clean, 1 = problems (printed).
@@ -26,6 +30,19 @@ PROTECTED = {
     "celerp.gateway", "celerp.connectors",
 }
 REQUIRED_FIELDS = ("name", "version", "display_name", "license")
+# Every key Celerp reads out of a manifest. An unknown key is not an error to the
+# loader, it is simply ignored, which is why it has to be an error here: a module
+# whose gating key is misspelled ships wide open and nothing says a word.
+MANIFEST_KEYS = {
+    "name", "version", "display_name", "label", "description", "license", "author",
+    "min_celerp_version", "api_routes", "ui_routes", "slots", "migrations",
+    "depends_on", "soft_depends", "requires", "first_party",
+}
+# The keys a nav slot entry may carry (ui/components/shell.py builds the sidebar).
+NAV_ITEM_KEYS = {
+    "group", "key", "href", "label", "label_key", "order", "settings_href",
+    "permission",
+}
 # min_celerp_version is optional, but when set it must be a dotted version so
 # the loader's comparison means something.
 MIN_VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
@@ -71,6 +88,68 @@ def _protected_imports(py_file: Path) -> set[str]:
     return hits
 
 
+def _manifest_key_problems(manifest: dict) -> list[str]:
+    """Keys Celerp will read straight past."""
+    problems = []
+    for key in sorted(k for k in manifest if k not in MANIFEST_KEYS):
+        problems.append(f"manifest has unknown key {key!r} - Celerp reads none of it, "
+                        f"so it does nothing at load time")
+    for index, item in enumerate(_nav_items(manifest)):
+        for key in sorted(k for k in item if k not in NAV_ITEM_KEYS):
+            hint = (" - core hides a nav entry by the role's \"permission\", so this "
+                    "entry is visible to everyone" if key == "min_role" else "")
+            problems.append(f"nav slot entry {index} has unknown key {key!r}{hint}")
+    return problems
+
+
+def _nav_items(manifest: dict) -> list[dict]:
+    """The nav slot's entries, whichever shape the author wrote it in."""
+    nav = (manifest.get("slots") or {}).get("nav")
+    if isinstance(nav, dict):
+        return [nav]
+    if isinstance(nav, list):
+        return [item for item in nav if isinstance(item, dict)]
+    return []
+
+
+def _str_rendered_fragments(py_file: Path) -> list[str]:
+    """Lines that hand a fragment to str() instead of to_xml().
+
+    `FT.__str__` returns `self.id`, so `str(Div(..., id="rows"))` is the five
+    characters "rows". It raises nothing, logs nothing, and every HTMX swap
+    replaces the page region with that word, which is why this check exists.
+    """
+    try:
+        tree = ast.parse(py_file.read_text())
+    except Exception:
+        return []
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        called = _called_name(node)
+        for inner in [node] + list(node.args):
+            if not (isinstance(inner, ast.Call) and _called_name(inner) == "str"):
+                continue
+            arg = inner.args[0] if inner.args else None
+            # An FT constructor is capitalised (Div, Table); so is any response
+            # class, so a str() inside one is suspect whatever its argument is.
+            builds_element = (isinstance(arg, ast.Call)
+                              and (_called_name(arg) or "")[:1].isupper())
+            if builds_element or (called or "").endswith("Response"):
+                found.append(str(inner.lineno))
+    return sorted(set(found), key=int)
+
+
+def _called_name(node: ast.Call) -> str | None:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
 def lint(folder: Path) -> list[str]:
     problems: list[str] = []
     init_file = folder / "__init__.py"
@@ -103,12 +182,19 @@ def lint(folder: Path) -> list[str]:
                         "number like '1.4.2' - the version check would not work")
     if not (manifest.get("slots") or manifest.get("api_routes") or manifest.get("ui_routes")):
         problems.append("manifest declares no slots and no routes - the module does nothing")
+    problems.extend(_manifest_key_problems(manifest))
 
     for py_file in folder.rglob("*.py"):
+        rel = py_file.relative_to(folder)
         hits = _protected_imports(py_file)
         for h in sorted(hits):
-            problems.append(f"{py_file.relative_to(folder)}: imports protected internal {h!r} "
+            problems.append(f"{rel}: imports protected internal {h!r} "
                             "- the loader will reject this module")
+        lines = _str_rendered_fragments(py_file)
+        if lines:
+            problems.append(f"{rel}: renders a fragment with str() at line(s) "
+                            f"{', '.join(lines)} - FT.__str__ returns the element id, so "
+                            f"the browser gets that word instead of markup; use to_xml(...)")
     return problems
 
 

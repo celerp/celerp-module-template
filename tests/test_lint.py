@@ -109,6 +109,74 @@ class TestProtectedImports(unittest.TestCase):
         self.assertTrue(any("celerp-" in p for p in problems), problems)
 
 
+class TestStrRenderedFragments(unittest.TestCase):
+    """The single most expensive mistake a module author can make.
+
+    `FT.__str__` returns the element's id, so `str(Div(..., id="content"))` is the
+    string "content". Every HTMX swap then replaces the page region with that word.
+    It raises nothing and logs nothing, so lint.py is the only place it can be caught
+    early.
+    """
+
+    def test_flags_str_rendered_ft(self):
+        folder = _module("acme-thing")
+        (folder / "ui_routes.py").write_text(
+            "from fasthtml.common import Div\n"
+            "from starlette.responses import HTMLResponse\n"
+            "def content():\n"
+            "    return HTMLResponse(str(Div('rows', id='thing-content')))\n",
+            encoding="utf-8")
+        problems = lint.lint(folder)
+        self.assertTrue(any("to_xml" in p for p in problems),
+                        f"str()-rendered fragment not reported: {problems}")
+        self.assertTrue(any("ui_routes.py" in p for p in problems), problems)
+
+    def test_to_xml_not_flagged(self):
+        folder = _module("acme-thing")
+        (folder / "ui_routes.py").write_text(
+            "from fasthtml.common import Div, to_xml\n"
+            "from starlette.responses import HTMLResponse\n"
+            "def content():\n"
+            "    return HTMLResponse(to_xml(Div('rows', id='thing-content')))\n",
+            encoding="utf-8")
+        self.assertEqual([p for p in lint.lint(folder) if "to_xml" in p], [])
+
+    def test_str_of_a_plain_value_not_flagged(self):
+        folder = _module("acme-thing")
+        (folder / "service.py").write_text(
+            "def label(count):\n    return str(count) + ' due'\n", encoding="utf-8")
+        self.assertEqual([p for p in lint.lint(folder) if "to_xml" in p], [])
+
+
+class TestManifestKeys(unittest.TestCase):
+    def test_flags_unknown_manifest_keys(self):
+        folder = _module("acme-thing", extra='"colour": "blue",')
+        problems = lint.lint(folder)
+        self.assertTrue(any("colour" in p for p in problems),
+                        f"an unknown manifest key is ignored at load time: {problems}")
+
+    def test_flags_min_role_in_nav_slot(self):
+        """min_role is banned vocabulary: core nav gating reads "permission"."""
+        folder = _module("acme-thing", extra=(
+            '"slots": {"nav": [{"label": "Thing", "href": "/thing", '
+            '"min_role": "operator"}]},'))
+        problems = lint.lint(folder)
+        self.assertTrue(any("min_role" in p for p in problems), problems)
+        self.assertTrue(any("permission" in p for p in problems),
+                        f"the report does not name the key to use instead: {problems}")
+
+    def test_permission_in_nav_slot_not_flagged(self):
+        folder = _module("acme-thing", extra=(
+            '"slots": {"nav": [{"label": "Thing", "href": "/thing", '
+            '"permission": "view_inventory"}]},'))
+        self.assertEqual([p for p in lint.lint(folder)
+                          if "min_role" in p or "unknown" in p.lower()], [])
+
+    def test_known_keys_not_flagged(self):
+        folder = _module("acme-thing", extra='"min_celerp_version": "1.4.2",')
+        self.assertEqual([p for p in lint.lint(folder) if "unknown" in p.lower()], [])
+
+
 def tearDownModule():
     for path in pathlib.Path(tempfile.gettempdir()).glob("tmp*"):
         if (path / "acme-thing").exists() or (path / "renamed-maintenance").exists():

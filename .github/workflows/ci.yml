@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  # The checks that need nothing but this repo: lint.py against the shipped module,
+  # and lint.py's own tests. Fast, and the only job a fork can always run.
+  structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest pytest-xdist
+      - run: python lint.py acme-maintenance
+      - run: pytest tests -n auto
+
+  # The module's own suite, which needs Celerp importable: it renders the real
+  # shared components and drives the real API app. Celerp is checked out beside
+  # this repo and installed, so a change to a shared component that would break
+  # this module shows up here rather than on someone's restart.
+  module:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: celerp/celerp
+          path: celerp
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ./celerp
+      - run: pip install pytest pytest-xdist aiosqlite
+      - run: pytest acme-maintenance/tests -n auto
+        env:
+          PYTHONPATH: ${{ github.workspace }}/celerp:${{ github.workspace }}/acme-maintenance

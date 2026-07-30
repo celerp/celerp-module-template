@@ -17,14 +17,17 @@ at a glance. Prefix with your own name instead (here: `acme-`).
 PLUGIN_MANIFEST = {
     # ── Identity ──────────────────────────────────────────────────────────────
     "name": "acme-maintenance",          # the module folder name; your vendor prefix, not celerp-
-    "version": "0.1.0",
+    "version": "0.2.0",
     "display_name": "Equipment Maintenance",
     "description": "Track company equipment and see what is due for service.",
     "license": "MIT",
     "author": "Acme",
     # The oldest Celerp this module is built and tested against. Celerp refuses
     # to install it on anything older, with a message telling the user to update.
-    "min_celerp_version": "1.4.2",
+    # Raise this whenever you start using a core component an earlier release
+    # did not have: these pages need the shared cell's caller-supplied save URL
+    # and date type, and the public files section, which arrive in 2.0.0.
+    "min_celerp_version": "2.0.0",
 
     # ── Routes ────────────────────────────────────────────────────────────────
     # Dotted paths to the inner package's route modules. The loader imports each
@@ -35,24 +38,38 @@ PLUGIN_MANIFEST = {
     "ui_routes": "acme_maintenance.ui_routes",
 
     # ── Extension slots ───────────────────────────────────────────────────────
-    # `nav` puts an entry in the sidebar. This is the slot to start with: it is
-    # consumed by core today, so your page shows up the moment you restart.
+    # `nav` puts entries in the sidebar. This is the slot to start with: it is
+    # consumed by core today, so your page shows up the moment you restart. It is
+    # a LIST, the same shape the first-party modules use, so a module that grows a
+    # second page adds a second dict rather than changing the slot's type.
     "slots": {
-        "nav": {
+        "nav": [{
             "group": "Operations",       # sidebar group heading; omit for a top-level item
             "key": "maintenance",        # unique nav key
-            "icon": "🛠",
-            "label": "Maintenance",
+            "label": "Maintenance",      # the sidebar text; there is no icon key to set
             "href": "/maintenance",
             "order": 50,                 # lower sorts higher in its group
-            "min_role": "operator",      # operator | admin | owner
-        },
+            # Core hides a nav entry the user's role cannot use, and it reads
+            # "permission" to decide. Permission keys are a fixed registry
+            # (celerp/services/permissions.py), so a module reuses the key that
+            # matches what its page does rather than inventing one: this module
+            # shows equipment records, so it borrows inventory's view key. The
+            # same key gates the API router, so hiding the link and blocking the
+            # request are one decision.
+            "permission": "view_inventory",
+        }],
     },
 
     # ── DB migrations ─────────────────────────────────────────────────────────
-    # Dotted path to an Alembic migrations directory inside this package. The
-    # loader adds it to the migration version locations; your table is created
-    # on the next launch. The migration sits on its own branch (see the file).
+    # Dotted path to this package's Alembic directory. Declare it so the path is
+    # discoverable, but know what actually creates your tables: your models
+    # register on Celerp's shared metadata when the loader imports them, and
+    # Celerp runs create_all after loading modules (celerp/main.py), so a NEW
+    # table appears on the next launch with no migration involved. Nothing in
+    # Celerp runs a module's Alembic directory today, so a migration that CHANGES
+    # a table you already shipped is yours to apply against the live database
+    # before the new code reaches it. Write it anyway: create_all cannot alter an
+    # existing table, so without one an upgrade lands on the old shape.
     "migrations": "acme_maintenance.migrations",
 
     # ── depends_on / requires ─────────────────────────────────────────────────
