@@ -46,7 +46,7 @@ class Node:
                     walk(child)
 
         walk(self)
-        return " ".join(parts.split())
+        return " ".join(" ".join(parts).split())
 
     def elements(self):
         """Every descendant element, document order, self excluded."""

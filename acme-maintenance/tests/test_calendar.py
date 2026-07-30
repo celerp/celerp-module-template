@@ -42,9 +42,10 @@ def test_invalid_month_falls_back_to_current(env):
     r = env.get("/maintenance?view=calendar&month=2026-13")
     assert r.status_code == 200
     tree = parse(r.text)
-    flash = tree.find(cls="flash")
-    assert flash is not None, "the fallback happened silently"
-    assert "2026-13" in flash.text()
+    # The shell ships an empty `#global-ui-error` flash on every page, so the check is
+    # that one of the banners actually names the month that could not be read.
+    said = [n.text() for n in tree.find_all(cls="flash")]
+    assert any("2026-13" in text for text in said), f"the fallback happened silently: {said}"
     today = date.today()
     first = tree.find(**{"data-day": today.replace(day=1).isoformat()})
     assert first is not None, "the grid is not the current month"
@@ -58,6 +59,11 @@ def test_calendar_sets_landscape_print_rule(env):
     tree = parse(markup)
     controls = tree.find(cls="page-actions")
     assert controls is not None
-    assert "no-print" in controls.classes, "the page controls would print with the grid"
+    # Core's print stylesheet hides `button` and `.btn` (app.css), so every control
+    # in the header is already off the printed page. A module cannot ship CSS, so
+    # "hidden when printed" has to mean "built from things core already hides".
+    printable = [e for e in controls.elements()
+                 if e.tag != "button" and "btn" not in e.classes]
+    assert not printable, f"these controls would print with the grid: {printable}"
     list_markup = env.get("/maintenance").text
     assert "landscape" not in list_markup, "the list view is portrait, and should stay so"

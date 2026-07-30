@@ -8,6 +8,7 @@ module's imagination, and a fragment route that returns something other than HTM
 from __future__ import annotations
 
 import re
+import uuid
 from pathlib import Path
 
 from fasthtml.common import to_xml
@@ -21,6 +22,27 @@ CLASS_RE = re.compile(r'class="([^"]*)"')
 def _core_ui_dir() -> Path:
     import ui
     return Path(ui.__file__).parent
+
+
+def _core_composed_classes() -> set[str]:
+    """Classes core's cell components build at render time rather than write down.
+
+    Both cells compose `cell--{cell_type}` from an argument, so the finished token
+    never appears literally in core's source and a grep for it finds nothing. Asking
+    the components what they emit is the honest test: whatever comes back is core's
+    own vocabulary, not a name this module made up.
+    """
+    from ui.components.table import display_cell, editable_cell
+
+    emitted: set[str] = set()
+    for cell_type in set(ui_routes.CELL_TYPES.values()):
+        options = ["Main plant"] if cell_type == "select" else None
+        for cell in (display_cell("id", "field", "value", cell_type=cell_type,
+                                  options=options),
+                     editable_cell("id", "field", "value", cell_type=cell_type,
+                                   options=options)):
+            emitted |= classes_in(to_xml(cell))
+    return emitted
 
 
 def test_search_is_in_page_header(env):
@@ -42,7 +64,9 @@ def test_all_classes_exist_in_core(env):
         p.read_text(errors="ignore") for p in _core_ui_dir().rglob("*")
         if p.suffix in (".py", ".css", ".js", ".html") and p.is_file()
     )
-    unknown = sorted(c for c in classes_in(markup) if c not in sources)
+    composed = _core_composed_classes()
+    unknown = sorted(c for c in classes_in(markup)
+                     if c not in sources and c not in composed)
     assert unknown == [], f"classes not found anywhere in core: {unknown}"
 
 
@@ -66,9 +90,10 @@ def test_filters_preserved_after_mark_serviced(env):
     due = env.equipment("Overdue lathe")
     env.equipment("Fresh press")
     env.service_log(env.equipment("Recently done"))
-    r = env.post("/maintenance/content?status=due", data={"selected": [due]})
+    r = env.post("/maintenance/mark-serviced?status=due", data={"selected": [due]})
     assert r.status_code == 200
     assert "Recently done" not in r.text, "the refresh ignored ?status=due"
+    assert len(env.rows("acme_service_log", equipment_id=due)) == 1, "nothing was recorded"
 
 
 def test_location_cell_is_select(env):
@@ -81,7 +106,8 @@ def test_location_cell_is_select(env):
 
 def test_location_select_searchable_over_threshold(make_env):
     """A8: more than ten options means a searchable select (GDR 2i)."""
-    env = make_env(locations=[{"id": str(n), "name": f"Bay {n}"} for n in range(1, 12)])
+    env = make_env(locations=[{"id": str(uuid.uuid4()), "name": f"Bay {n}"}
+                              for n in range(1, 12)])
     eq_id = env.equipment("Lathe", location="Bay 1")
     body = env.get(f"/maintenance/{eq_id}/cell/location/edit", htmx=True).text
     assert "combobox-input" in body, "eleven options rendered a plain select"
@@ -120,12 +146,24 @@ def test_serviced_cell_is_editable_date(env):
 
 
 def test_cells_come_from_shared_component(env):
-    """A13: the cells ARE the house cells, not a lookalike."""
+    """A13: the cells ARE the house cells, not a lookalike.
+
+    The name cell also carries the link into the record, the way inventory's SKU cell
+    does: one click opens the equipment, a double-click still edits the name in place.
+    That is one control doing both jobs, so the actions cell stays down to one glyph.
+    """
     from ui.components.table import display_cell
     eq_id = env.equipment("Lathe")
     expected = to_xml(display_cell(eq_id, "name", "Lathe", cell_type="text",
+                                   link_href=f"/maintenance/{eq_id}",
                                    edit_url=f"/maintenance/{eq_id}/cell/name/edit"))
-    assert expected.strip() in env.get("/maintenance").text
+    # Indentation depends on how deep the cell sits, so drop the whitespace between
+    # tags. Everything else has to match character for character: a hand-rolled
+    # lookalike would not.
+    def flat(markup: str) -> str:
+        return re.sub(r">\s+<", "><", markup).strip()
+
+    assert flat(expected) in flat(env.get("/maintenance").text)
 
 
 def test_detail_page_sections(env):
@@ -212,8 +250,10 @@ def test_all_emitted_classes_exist_in_core_css(env):
     css = (_core_ui_dir() / "static" / "app.css").read_text()
     core_py = "".join(p.read_text(errors="ignore")
                       for p in _core_ui_dir().rglob("*.py") if p.is_file())
+    composed = _core_composed_classes()
     missing = sorted(
         c for view in views for c in classes_in(to_xml(view))
         if f".{c}" not in css and f'"{c}' not in core_py and f' {c}"' not in core_py
+        and c not in composed
     )
     assert missing == [], f"classes with no core styling and no core caller: {missing}"

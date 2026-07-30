@@ -43,8 +43,7 @@ PLUGIN_MANIFEST = {
         "nav": [{
             "group": "Operations",       # sidebar group heading; omit for a top-level item
             "key": "maintenance",        # unique nav key
-            "icon": "🛠",
-            "label": "Maintenance",
+            "label": "Maintenance",      # the sidebar text; there is no icon key to set
             "href": "/maintenance",
             "order": 50,                 # lower sorts higher in its group
             # Core hides a nav entry the user's role cannot use, and it reads
@@ -59,9 +58,15 @@ PLUGIN_MANIFEST = {
     },
 
     # ── DB migrations ─────────────────────────────────────────────────────────
-    # Dotted path to an Alembic migrations directory inside this package. The
-    # loader adds it to the migration version locations; your table is created
-    # on the next launch. The migration sits on its own branch (see the file).
+    # Dotted path to this package's Alembic directory. Declare it so the path is
+    # discoverable, but know what actually creates your tables: your models
+    # register on Celerp's shared metadata when the loader imports them, and
+    # Celerp runs create_all after loading modules (celerp/main.py), so a NEW
+    # table appears on the next launch with no migration involved. Nothing in
+    # Celerp runs a module's Alembic directory today, so a migration that CHANGES
+    # a table you already shipped is yours to apply against the live database
+    # before the new code reaches it. Write it anyway: create_all cannot alter an
+    # existing table, so without one an upgrade lands on the old shape.
     "migrations": "acme_maintenance.migrations",
 
     # ── depends_on / requires ─────────────────────────────────────────────────
