@@ -234,15 +234,18 @@ def test_files_section_exposes_no_static_attachment_url(env):
     assert f"/maintenance/{eq_id}/files/" in markup
 
 
-def test_bulkbar_wrapper_hidden_by_default(env):
-    """A45: the action list appears only once rows are ticked (owner defect 2)."""
+def test_bulkbar_hidden_until_selection(env):
+    """A45: the action list appears only once rows are ticked (owner defect 2).
+
+    Core's shared toolbar hides itself until its own script counts a ticked row,
+    so the module renders it bare: no wrapper, no reveal script of its own."""
     env.equipment("Lathe")
     markup = env.get("/maintenance").text
-    wrapper = parse(markup).find(cls="bulk-toolbar")
-    assert wrapper is not None, "the shared toolbar is not wrapped in the hidden box"
-    assert "is-active" not in wrapper.classes
-    assert wrapper.find(cls="bulkbar") is not None, "the wrapper does not hold the shared bar"
-    assert "is-active" in markup, "nothing on the page ever reveals the box"
+    bar = parse(markup).find(cls="bulkbar")
+    assert bar is not None, "the shared bar is not on the page"
+    assert "is-active" not in bar.classes
+    assert "classList.toggle('is-active'" in markup, \
+        "nothing on the page ever reveals the bar"
 
 
 def test_all_emitted_classes_exist_in_core_css(env):

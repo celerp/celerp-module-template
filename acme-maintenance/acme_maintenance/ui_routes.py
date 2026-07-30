@@ -27,7 +27,6 @@ gets a 403 there.
 from __future__ import annotations
 
 import calendar as _calendar
-import json
 import logging
 from datetime import date, datetime
 from urllib.parse import urlencode
@@ -42,7 +41,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from celerp.services.permissions import role_has_permission
 from ui.components.files import files_section
-from ui.components.shell import base_shell, flash, page_header
+from ui.components.shell import base_shell, flash, page_header, toast_header
 from ui.components.table import (
     COLUMN_FILTER_JS, EMPTY, ENHANCED_TABLE_JS, breadcrumbs, bulk_toolbar,
     date_range_filter, display_cell, editable_cell, empty_state_cta, filter_th,
@@ -87,27 +86,6 @@ DETAIL_ERROR = "This equipment record could not be loaded, so none of it is show
 # module adds, and it goes through the shell's supported extra_head hook.
 CALENDAR_PRINT_CSS = "@page { size: A4 landscape; margin: 10mm; }"
 
-# Core's `.bulk-toolbar` box is `display: none` until it also carries `is-active`
-# (app.css), which is how inventory's action bar stays out of the way until rows
-# are ticked. The shared `bulk_toolbar` never hides itself, so the module wraps it
-# in that box and toggles the class from the count of ticked rows, on the same two
-# events the shared toolbar JS listens to.
-BULK_REVEAL_JS = """
-(function(){
-  if(window.__maintBulkReveal) return; window.__maintBulkReveal = true;
-  function sync(){
-    var wrap = document.getElementById('maint-bulkwrap');
-    if(!wrap) return;
-    var n = document.querySelectorAll('#maint-table .bulk-select:checked').length;
-    if(n > 0){ wrap.classList.add('is-active'); } else { wrap.classList.remove('is-active'); }
-  }
-  document.addEventListener('change', sync);
-  document.addEventListener('htmx:afterSwap', sync);
-  sync();
-})();
-"""
-
-
 def _api(request: Request):
     token = request.cookies.get(COOKIE_NAME)
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -144,11 +122,6 @@ def _detail_message(payload: dict) -> str:
     if isinstance(detail, list) and detail:                    # FastAPI validation shape
         return str(detail[0].get("msg", "")) or ""
     return ""
-
-
-def _toast(message: str, kind: str = "success") -> dict:
-    """Header that makes core's toast listener speak (`shell.py`)."""
-    return {"HX-Trigger": json.dumps({"celerpToast": {"message": message, "type": kind}})}
 
 
 def _login_fragment() -> HTMLResponse:
@@ -345,11 +318,11 @@ def _content(items: list[dict], params: dict, *, locations: list[str] | None,
         status_cards(cards, _url(params, status=None), params["status"] or None,
                      total_override=len(items)),
         Div(date_range_filter(TABLE_ID, 3, "Last serviced"), cls="filter-bar"),
-        (Div(bulk_toolbar(TABLE_ID, [
+        (bulk_toolbar(TABLE_ID, [
             {"value": "serviced", "label": "Mark serviced", "method": "post",
              "url": "/maintenance/mark-serviced", "target": f"#{CONTENT_ID}",
              "swap": "outerHTML"},
-        ]), cls="bulk-toolbar", id="maint-bulkwrap") if can_edit else ""),
+        ]) if can_edit else ""),
         block,
         id=CONTENT_ID)
 
@@ -374,10 +347,10 @@ def _list_view(items: list[dict], params: dict, *, locations: list[str] | None,
         breadcrumbs([("Operations", None), ("Maintenance", None)]),
         page_header("Equipment maintenance", *actions),
         _content(items, params, locations=locations, can_edit=can_edit, error=error),
-        # The shared enhancers: sorting and paging, the column funnels, and the
-        # reveal for the action box. `bulk_toolbar` ships its own script, so the
-        # page must not add a second copy of it.
-        Script(ENHANCED_TABLE_JS), Script(COLUMN_FILTER_JS), Script(BULK_REVEAL_JS))
+        # The shared enhancers: sorting and paging, and the column funnels.
+        # `bulk_toolbar` ships its own script (including its hide-until-selected
+        # behavior), so the page must not add a second copy of it.
+        Script(ENHANCED_TABLE_JS), Script(COLUMN_FILTER_JS))
 
 
 # ── the detail view ───────────────────────────────────────────────────────────
@@ -548,7 +521,7 @@ def setup_ui_routes(app) -> None:
         block = _content(items, params, locations=locations, can_edit=can_edit,
                          error=None if status == 200 else LIST_ERROR)
         return HTMLResponse(to_xml(block),
-                            headers=_toast(message, kind) if message else {})
+                            headers=toast_header(message, kind) if message else {})
 
     async def _detail_data(request: Request, equipment_id: str) -> tuple[int, dict]:
         return await _call(request, "get", f"{API}/{equipment_id}")
@@ -561,13 +534,13 @@ def setup_ui_routes(app) -> None:
             return _login_fragment()
         if status != 200:
             return HTMLResponse("", status_code=status or 502,
-                                headers=_toast(_detail_message(payload) or DETAIL_ERROR, "error"))
+                                headers=toast_header(_detail_message(payload) or DETAIL_ERROR, "error"))
         _settings, can_edit = await _context(request)
         locations = await _location_names(request)
         block = _detail_view(payload["item"], payload.get("logs", []), payload.get("files", []),
                              locations=locations, can_edit=can_edit)
         return HTMLResponse(to_xml(block),
-                            headers=_toast(message, kind) if message else {})
+                            headers=toast_header(message, kind) if message else {})
 
     async def _files_fragment(request: Request, equipment_id: str, *,
                               message: str | None = None,
@@ -578,7 +551,7 @@ def setup_ui_routes(app) -> None:
             return _login_fragment()
         if status != 200:
             return HTMLResponse("", status_code=status or 502,
-                                headers=_toast(_detail_message(payload)
+                                headers=toast_header(_detail_message(payload)
                                                or "The files could not be loaded", "error"))
         _settings, can_edit = await _context(request)
         q = request.query_params
@@ -590,7 +563,7 @@ def setup_ui_routes(app) -> None:
             tag_filter=q.get("tag_filter", ""), date_from=q.get("date_from", ""),
             date_to=q.get("date_to", ""), search=q.get("search", ""))
         return HTMLResponse(to_xml(section),
-                            headers=_toast(message, kind) if message else {})
+                            headers=toast_header(message, kind) if message else {})
 
     # ── pages ──
 
@@ -662,7 +635,7 @@ def setup_ui_routes(app) -> None:
         if status not in (200, 201) or not payload.get("id"):
             message = _detail_message(payload) or "The equipment could not be created"
             return HTMLResponse("", status_code=status or 502,
-                                headers=_toast(message, "error"))
+                                headers=toast_header(message, "error"))
         return HTMLResponse("", status_code=204,
                             headers={"HX-Redirect": f"/maintenance/{payload['id']}"})
 
@@ -692,7 +665,7 @@ def setup_ui_routes(app) -> None:
             return _login_fragment()
         if status != 200:
             return HTMLResponse("", status_code=status or 502,
-                                headers=_toast(_detail_message(payload)
+                                headers=toast_header(_detail_message(payload)
                                                or "It was not marked serviced", "error"))
         if not payload.get("updated"):
             return await _detail_fragment(request, equipment_id, kind="error",
@@ -708,7 +681,7 @@ def setup_ui_routes(app) -> None:
             return _login_fragment()
         if status != 200:
             return HTMLResponse("", status_code=status or 502,
-                                headers=_toast(_detail_message(payload)
+                                headers=toast_header(_detail_message(payload)
                                                or "That entry was not removed", "error"))
         message = ("Service entry removed" if payload.get("removed")
                    else "That entry was already gone")
@@ -722,7 +695,7 @@ def setup_ui_routes(app) -> None:
             message = _detail_message(payload) or "That equipment no longer exists"
             if request.query_params.get("from") == "detail":
                 return HTMLResponse("", status_code=status or 502,
-                                    headers=_toast(message, "error"))
+                                    headers=toast_header(message, "error"))
             return await _list_fragment(request, message=message, kind="error")
         done = "archived" if action == "archive" else "restored"
         if request.query_params.get("from") == "detail":
@@ -731,7 +704,7 @@ def setup_ui_routes(app) -> None:
             target = "/maintenance" if action == "archive" else f"/maintenance/{equipment_id}"
             return HTMLResponse("", status_code=204,
                                 headers={"HX-Redirect": target,
-                                         **_toast(f"Equipment {done}")})
+                                         **toast_header(f"Equipment {done}")})
         return await _list_fragment(request, message=f"Equipment {done}")
 
     @app.post("/maintenance/{equipment_id}/archive")
@@ -753,7 +726,7 @@ def setup_ui_routes(app) -> None:
             return _login_fragment()
         if status != 200:
             return HTMLResponse("", status_code=status or 502,
-                                headers=_toast(_detail_message(payload) or DETAIL_ERROR, "error"))
+                                headers=toast_header(_detail_message(payload) or DETAIL_ERROR, "error"))
         locations, warning = None, None
         if CELL_TYPES[field] == "select":
             locations = await _location_names(request)
@@ -762,7 +735,7 @@ def setup_ui_routes(app) -> None:
                            "field for now.")
         editor = _editor(equipment_id, field, payload["item"].get(field), locations=locations)
         return HTMLResponse(to_xml(editor),
-                            headers=_toast(warning, "warning") if warning else {})
+                            headers=toast_header(warning, "warning") if warning else {})
 
     @app.get("/maintenance/{equipment_id}/cell/{field}/display")
     async def cell_display(request: Request, equipment_id: str, field: str):
@@ -774,7 +747,7 @@ def setup_ui_routes(app) -> None:
             return _login_fragment()
         if status != 200:
             return HTMLResponse("", status_code=status or 502,
-                                headers=_toast(_detail_message(payload) or DETAIL_ERROR, "error"))
+                                headers=toast_header(_detail_message(payload) or DETAIL_ERROR, "error"))
         _settings, can_edit = await _context(request)
         locations = await _location_names(request) if CELL_TYPES[field] == "select" else None
         return HTMLResponse(to_xml(_cell(payload["item"], field, can_edit=can_edit,
@@ -799,7 +772,7 @@ def setup_ui_routes(app) -> None:
             editor = _editor(equipment_id, field, value, locations=locations)
             editor.attrs["class"] = (editor.attrs.get("class", "") + " cell--error").strip()
             editor.attrs["title"] = f"Not saved: {message}"
-            return HTMLResponse(to_xml(editor), headers=_toast(message, "error"))
+            return HTMLResponse(to_xml(editor), headers=toast_header(message, "error"))
         return HTMLResponse(to_xml(_cell(payload, field, can_edit=True, locations=locations)))
 
     # ── files: the contract the shared files section calls ──

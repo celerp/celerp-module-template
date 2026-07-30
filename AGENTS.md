@@ -35,9 +35,9 @@ hand-rolled version would drift from the rest of the app the first time core cha
 
 **4. Gate reads and writes with a permission key, and use an existing one.**
 Permission keys are a closed registry (`celerp/services/permissions.py:46`), and
-`role_has_permission` (`celerp/services/permissions.py:103`) raises on a key that is
-not in it, so a module cannot invent one today. Pick the key that matches what the
-page does. The API router depends on `require_permission`
+the loader refuses a module whose slots name a key outside it
+(`celerp/modules/loader.py:763`), so a module cannot invent one today. Pick the
+key that matches what the page does. The API router depends on `require_permission`
 (`acme-maintenance/acme_maintenance/routes.py:54`) and the sidebar hides an entry
 whose `permission` the role does not have (`ui/components/shell.py:1405`); the page
 asks the same question so a viewer is never offered a control that would only fail.
