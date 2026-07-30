@@ -17,14 +17,17 @@ at a glance. Prefix with your own name instead (here: `acme-`).
 PLUGIN_MANIFEST = {
     # ── Identity ──────────────────────────────────────────────────────────────
     "name": "acme-maintenance",          # the module folder name; your vendor prefix, not celerp-
-    "version": "0.1.0",
+    "version": "0.2.0",
     "display_name": "Equipment Maintenance",
     "description": "Track company equipment and see what is due for service.",
     "license": "MIT",
     "author": "Acme",
     # The oldest Celerp this module is built and tested against. Celerp refuses
     # to install it on anything older, with a message telling the user to update.
-    "min_celerp_version": "1.4.2",
+    # Raise this whenever you start using a core component an earlier release
+    # did not have: these pages need the shared cell's caller-supplied save URL
+    # and date type, and the public files section, which arrive in 2.0.0.
+    "min_celerp_version": "2.0.0",
 
     # ── Routes ────────────────────────────────────────────────────────────────
     # Dotted paths to the inner package's route modules. The loader imports each
