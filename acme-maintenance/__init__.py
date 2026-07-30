@@ -35,18 +35,27 @@ PLUGIN_MANIFEST = {
     "ui_routes": "acme_maintenance.ui_routes",
 
     # ── Extension slots ───────────────────────────────────────────────────────
-    # `nav` puts an entry in the sidebar. This is the slot to start with: it is
-    # consumed by core today, so your page shows up the moment you restart.
+    # `nav` puts entries in the sidebar. This is the slot to start with: it is
+    # consumed by core today, so your page shows up the moment you restart. It is
+    # a LIST, the same shape the first-party modules use, so a module that grows a
+    # second page adds a second dict rather than changing the slot's type.
     "slots": {
-        "nav": {
+        "nav": [{
             "group": "Operations",       # sidebar group heading; omit for a top-level item
             "key": "maintenance",        # unique nav key
             "icon": "🛠",
             "label": "Maintenance",
             "href": "/maintenance",
             "order": 50,                 # lower sorts higher in its group
-            "min_role": "operator",      # operator | admin | owner
-        },
+            # Core hides a nav entry the user's role cannot use, and it reads
+            # "permission" to decide. Permission keys are a fixed registry
+            # (celerp/services/permissions.py), so a module reuses the key that
+            # matches what its page does rather than inventing one: this module
+            # shows equipment records, so it borrows inventory's view key. The
+            # same key gates the API router, so hiding the link and blocking the
+            # request are one decision.
+            "permission": "view_inventory",
+        }],
     },
 
     # ── DB migrations ─────────────────────────────────────────────────────────

@@ -22,14 +22,14 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fasthtml.common import FastHTML
-from sqlalchemy import create_engine, select
+from sqlalchemy import Uuid, create_engine, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 from starlette.testclient import TestClient
 
 from celerp.db import get_session
 from celerp.models.base import Base
-from celerp.models.company import Company
+from celerp.models.company import Company, Location
 from celerp.services.auth import (
     get_current_company_id,
     get_current_role,
@@ -118,7 +118,7 @@ class Env:
         table = self.table(name)
         stmt = select(table)
         for key, value in where.items():
-            stmt = stmt.where(table.c[key] == value)
+            stmt = stmt.where(table.c[key] == _as_column_value(table, key, value))
         with self.session() as s:
             return [dict(r._mapping) for r in s.execute(stmt)]
 
@@ -126,6 +126,7 @@ class Env:
         table = self.table(name)
         values.setdefault("id", uuid.uuid4())
         values.setdefault("company_id", self.company_id)
+        values = {k: _as_column_value(table, k, v) for k, v in values.items()}
         with self.session() as s:
             s.execute(table.insert().values(**values))
             s.commit()
@@ -153,7 +154,7 @@ class Env:
             s.commit()
         return str(values["id"])
 
-    def service_log(self, equipment_id, *, serviced_at=None, cost=0, notes=""):
+    def service_log(self, equipment_id, *, serviced_at=None, cost=0, note=""):
         """Insert one service-log row directly and return its id as a string."""
         table = self.table("acme_service_log")
         values = {
@@ -162,7 +163,7 @@ class Env:
             "equipment_id": uuid.UUID(str(equipment_id)),
             "serviced_at": serviced_at or date.today(),
             "cost": cost,
-            "notes": notes,
+            "note": note,
             "created_at": datetime.now(timezone.utc),
         }
         values = {k: v for k, v in values.items() if k in table.c}
@@ -188,6 +189,21 @@ class Env:
 
 def _headers(htmx: bool) -> dict:
     return {"HX-Request": "true"} if htmx else {}
+
+
+def _as_column_value(table, key: str, value):
+    """Let a test pass an id as the string the routes speak.
+
+    Ids cross the HTTP boundary as strings, so tests hold them as strings. A UUID
+    column will not compare against one, so coerce here rather than making every
+    test wrap its ids.
+    """
+    if isinstance(value, str) and isinstance(table.c[key].type, Uuid):
+        try:
+            return uuid.UUID(value)
+        except ValueError:
+            return value
+    return value
 
 
 def _fake_token(company_id, role: str) -> str:
@@ -223,14 +239,24 @@ def make_env(tmp_path, monkeypatch):
         import celerp.config
         monkeypatch.setattr(celerp.config.settings, "data_dir", tmp_path, raising=False)
 
-        db_path = tmp_path / "module.db"
+        # One database per Env: a test that builds a second environment (a viewer,
+        # or a company with no locations) is describing a separate company, and
+        # sharing one file would let its rows show up in the first one's queries.
+        db_path = tmp_path / f"module-{company_id.hex[:8]}.db"
         sync_engine = create_engine(f"sqlite:///{db_path}")
+        # Only this module's tables plus the two core tables it reads: companies,
+        # and locations for the location dropdown. Creating the whole core schema
+        # would make the module's tests depend on every core migration.
+        core_tables = {"companies", "locations"}
         tables = [t for t in Base.metadata.sorted_tables
-                  if t.name.startswith(MODULE_TABLE_PREFIX) or t.name == "companies"]
+                  if t.name.startswith(MODULE_TABLE_PREFIX) or t.name in core_tables]
         Base.metadata.create_all(sync_engine, tables=tables)
         with Session(sync_engine) as s:
             for cid, name in ((company_id, "Acme Co"), (other_company_id, "Other Co")):
                 s.add(Company(id=cid, name=name, slug=f"c-{cid.hex[:8]}", settings={}))
+            for loc in locs:
+                s.add(Location(id=uuid.UUID(str(loc["id"])), company_id=company_id,
+                               name=loc["name"], type="warehouse"))
             s.commit()
 
         async_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")

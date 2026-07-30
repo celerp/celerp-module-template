@@ -276,7 +276,7 @@ def test_download_missing_storage_key_404(env):
     eq = env.equipment("Lathe")
     r = env.api.get(f"{API}/{eq}/files/{env.company_id}/download")
     assert r.status_code == 404
-    assert r.json()["detail"] == "File not found"
+    assert r.json()["detail"] == "That file no longer exists"
 
 
 def test_download_row_present_bytes_missing(env, tmp_path):

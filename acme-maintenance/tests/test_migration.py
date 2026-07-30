@@ -58,7 +58,7 @@ def _seed(connection, *rows) -> list[uuid.UUID]:
 
 def _log_rows(connection) -> list[dict]:
     return [dict(r._mapping) for r in connection.execute(
-        sa.text("SELECT equipment_id, serviced_at, notes FROM acme_service_log"))]
+        sa.text("SELECT equipment_id, serviced_at, note FROM acme_service_log"))]
 
 
 def test_maint_002_backfills_log(conn):

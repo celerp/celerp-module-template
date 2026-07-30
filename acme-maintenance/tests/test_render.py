@@ -131,7 +131,7 @@ def test_cells_come_from_shared_component(env):
 def test_detail_page_sections(env):
     """A14: the detail page carries identity, instructions, history and files."""
     eq_id = env.equipment("Lathe", location="Main plant")
-    env.service_log(eq_id, notes="Belt replaced")
+    env.service_log(eq_id, note="Belt replaced")
     tree = parse(env.get(f"/maintenance/{eq_id}").text)
     titles = [n.text() for n in tree.find_all(cls="section-title")]
     for expected in ("Equipment", "Service instructions", "Service history", "Files"):
@@ -205,7 +205,7 @@ def test_all_emitted_classes_exist_in_core_css(env):
     views = [
         ui_routes._list_view([item], params, locations=["Main plant"], can_edit=True),
         ui_routes._detail_view(item, [{"id": "l1", "serviced_at": "2026-07-01",
-                                       "cost": 0, "notes": ""}], [],
+                                       "cost": 0, "note": ""}], [],
                                locations=["Main plant"], can_edit=True),
         ui_routes._calendar_view([item], "2026-08"),
     ]
