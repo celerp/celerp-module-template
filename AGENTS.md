@@ -68,7 +68,9 @@ rather than serving a bare fragment as a document.
 **8. Fail honestly.** An unreachable API renders an error that says so; it never
 renders an empty list, because "nothing here" and "we could not ask" are different
 facts and the user acts differently on each. A rejected edit comes back as the
-editor with the value still in it and a message explaining the refusal. A list a
+editor with the value still in it, marked `cell--error` and carrying the reason in
+its `title`, which is how core marks one (`ui/routes/inventory.py:2050`); a
+toast on its own vanishes and leaves the refused value looking accepted. A list a
 user cannot load is not a list they should be told is empty.
 
 ## What you may not import

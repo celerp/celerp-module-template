@@ -206,6 +206,24 @@ def test_location_fetch_failure_falls_back_to_text(env):
     assert "celerpToast" in r.headers.get("HX-Trigger", ""), "the user is not told why"
 
 
+def test_rejected_cell_edit_marks_the_editor(env):
+    """A48: a refused save says why beside the cell, the way core marks one.
+
+    Core re-renders the editor with `cell--error` and a `title=` the user can read
+    (ui/routes/inventory.py:2050-2078). A toast alone leaves the number
+    sitting in the box with nothing to say it was refused, and nothing at all for
+    a user who missed the toast.
+    """
+    eq_id = env.equipment("Lathe", last_cost=12)
+    r = env.patch(f"/maintenance/{eq_id}/cell/last_cost", data={"value": "-5"})
+    cell = parse(r.text).find(cls="cell--error")
+    assert cell is not None, "the refused editor is not marked"
+    assert "Cost cannot be negative" in (cell.attrs.get("title") or ""), \
+        "the editor does not carry the reason"
+    assert 'value="-5"' in r.text, "the typed value was thrown away"
+    assert env.rows("acme_equipment", id=eq_id)[0]["last_cost"] == 12, "the bad value was saved"
+
+
 def test_files_section_exposes_no_static_attachment_url(env):
     """A41: the stored path never reaches the client; downloads go through the module."""
     eq_id = env.equipment("Lathe")

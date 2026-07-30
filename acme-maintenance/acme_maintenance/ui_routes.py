@@ -796,9 +796,10 @@ def setup_ui_routes(app) -> None:
             # Rejected: give the editor back with the value still in it and say
             # why, rather than swallowing the edit or hiding the control.
             message = _detail_message(payload) or "That value was not saved"
-            return HTMLResponse(to_xml(_editor(equipment_id, field, value,
-                                               locations=locations)),
-                                headers=_toast(message, "error"))
+            editor = _editor(equipment_id, field, value, locations=locations)
+            editor.attrs["class"] = (editor.attrs.get("class", "") + " cell--error").strip()
+            editor.attrs["title"] = f"Not saved: {message}"
+            return HTMLResponse(to_xml(editor), headers=_toast(message, "error"))
         return HTMLResponse(to_xml(_cell(payload, field, can_edit=True, locations=locations)))
 
     # ── files: the contract the shared files section calls ──
