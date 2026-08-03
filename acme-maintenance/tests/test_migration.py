@@ -87,3 +87,16 @@ def test_maint_002_backfill_is_idempotent(conn):
     _run(conn, _maint_002())
     assert _log_rows(conn) == first, "the second run duplicated the backfilled entry"
     assert len(first) == 1
+
+
+def test_maint_001_create_is_idempotent(conn):
+    """A re-run of the first migration is a no-op, not a duplicate-table error.
+
+    Celerp runs a module's migrations on every startup, so the first one has to
+    survive being applied to a database that already has its table.
+    """
+    before = set(sa.inspect(conn).get_table_names())
+    assert "acme_equipment" in before
+    _run(conn, maint_001)
+    after = set(sa.inspect(conn).get_table_names())
+    assert after == before, "the second run of maint_001 changed the schema"
