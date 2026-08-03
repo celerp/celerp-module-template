@@ -36,7 +36,7 @@ REQUIRED_FIELDS = ("name", "version", "display_name", "license")
 MANIFEST_KEYS = {
     "name", "version", "display_name", "label", "description", "license", "author",
     "min_celerp_version", "api_routes", "ui_routes", "slots", "migrations",
-    "depends_on", "soft_depends", "requires", "first_party",
+    "table_prefix", "depends_on", "soft_depends", "requires", "first_party",
 }
 # The keys a nav slot entry may carry (ui/components/shell.py builds the sidebar).
 NAV_ITEM_KEYS = {
