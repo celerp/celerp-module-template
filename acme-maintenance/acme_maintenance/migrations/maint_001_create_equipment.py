@@ -1,26 +1,22 @@
 # SPDX-License-Identifier: MIT
-"""Create acme_equipment table
+"""Create the acme_equipment table.
 
-The module's migrations live on their OWN Alembic branch (branch_labels below,
-matching the module name) with down_revision = None, so a module's schema is
-independent of core's migration chain and of other modules. The loader points
-Alembic at this directory; the table is created on the next launch.
-
-Revision ID: maint_001
-Revises:
+Celerp runs a module's migrations at startup, in filename order, and keeps no
+version state, so every migration has to be safe to apply again: it checks for
+what it creates before creating it. There is no revision graph and no downgrade
+here - recovery from a bad upgrade is a restore from backup, which is why the
+steps only ever go forward. maint_001 makes the equipment table; the next file
+evolves it.
 """
 from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "maint_001"
-down_revision = None
-branch_labels = ("acme-maintenance",)
-depends_on = None
-
 
 def upgrade() -> None:
+    if "acme_equipment" in sa.inspect(op.get_bind()).get_table_names():
+        return
     op.create_table(
         "acme_equipment",
         sa.Column("id", sa.Uuid(as_uuid=True), primary_key=True),
@@ -34,7 +30,3 @@ def upgrade() -> None:
         sa.Column("notes", sa.Text(), nullable=False, server_default=""),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
     )
-
-
-def downgrade() -> None:
-    op.drop_table("acme_equipment")

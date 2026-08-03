@@ -7,9 +7,6 @@ so one service is one row and undoing one cannot leave two fields disagreeing.
 Every step is guarded by an inspector check, including the backfill: a re-run after
 the insert succeeded but a later step failed must not insert a second log row per
 equipment and fabricate duplicate service history.
-
-Revision ID: maint_002
-Revises: maint_001
 """
 from __future__ import annotations
 
@@ -17,11 +14,6 @@ import uuid
 
 import sqlalchemy as sa
 from alembic import op
-
-revision = "maint_002"
-down_revision = "maint_001"
-branch_labels = None
-depends_on = None
 
 
 def _columns(table: str) -> set[str]:
@@ -99,23 +91,3 @@ def upgrade() -> None:
             ), {"id": str(uuid.uuid4()), "company_id": str(company_id),
                 "equipment_id": str(equipment_id), "serviced_at": serviced_at})
         op.drop_column("acme_equipment", "serviced_at")
-
-
-def downgrade() -> None:
-    columns = _columns("acme_equipment")
-    if "serviced_at" not in columns:
-        op.add_column("acme_equipment", sa.Column("serviced_at", sa.Date(), nullable=True))
-        op.execute(
-            "UPDATE acme_equipment SET serviced_at = ("
-            " SELECT MAX(l.serviced_at) FROM acme_service_log l"
-            " WHERE l.equipment_id = acme_equipment.id)"
-        )
-    tables = _tables()
-    if "acme_equipment_file" in tables:
-        op.drop_table("acme_equipment_file")
-    if "acme_service_log" in tables:
-        op.drop_table("acme_service_log")
-    if "archived_at" in columns:
-        op.drop_column("acme_equipment", "archived_at")
-    if "instructions" in columns:
-        op.drop_column("acme_equipment", "instructions")

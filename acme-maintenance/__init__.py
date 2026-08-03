@@ -61,15 +61,17 @@ PLUGIN_MANIFEST = {
     },
 
     # ── DB migrations ─────────────────────────────────────────────────────────
-    # Dotted path to this package's Alembic directory. Declare it so the path is
-    # discoverable, but know what actually creates your tables: your models
-    # register on Celerp's shared metadata when the loader imports them, and
-    # Celerp runs create_all after loading modules (celerp/main.py), so a NEW
-    # table appears on the next launch with no migration involved. Nothing in
-    # Celerp runs a module's Alembic directory today, so a migration that CHANGES
-    # a table you already shipped is yours to apply against the live database
-    # before the new code reaches it. Write it anyway: create_all cannot alter an
-    # existing table, so without one an upgrade lands on the old shape.
+    # table_prefix is the prefix every table this module owns shares; "migrations"
+    # is the dotted path to this package's migration files. Celerp runs each
+    # enabled module's migrations at startup, in filename order, before the module
+    # loads, and keeps no version state - so write each one to check for what it
+    # creates before it creates it, and it stays safe to run on every launch (see
+    # the migrations/ files). A brand new table also appears from your models
+    # through create_all, but only a migration can ALTER a table you have already
+    # shipped, which create_all cannot. Celerp reads table_prefix to keep a
+    # migration's changes to your own tables, and it is the exact set Celerp drops
+    # if the module is deleted.
+    "table_prefix": "acme_",
     "migrations": "acme_maintenance.migrations",
 
     # ── depends_on / requires ─────────────────────────────────────────────────
