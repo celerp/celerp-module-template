@@ -177,6 +177,83 @@ def test_detail_page_sections(env):
     assert "Belt replaced" in tree.text()
 
 
+def test_detail_header_saves_and_returns_not_marks_serviced(env):
+    """The detail page tells the user what comes next: a primary Save changes action
+    on the left that returns to the list, Archive kept on the right as the
+    destructive action. Marking serviced is done from the list row, so it is gone
+    from this header (GDR 2b/2c: a clear way forward and back)."""
+    eq_id = env.equipment("Lathe")
+    tree = parse(env.get(f"/maintenance/{eq_id}").text)
+    actions = next((a for a in tree.find_all(cls="page-actions")
+                    if "Save changes" in a.text()), None)
+    assert actions is not None, "the detail header has no Save changes action"
+    controls = [e for e in actions.elements() if e.tag in ("a", "button")]
+    labels = [e.text().strip() for e in controls]
+    assert "Mark serviced" not in tree.text(), "Mark serviced is still on the detail page"
+    assert "Save changes" in labels and "Archive" in labels, f"header controls: {labels}"
+    assert labels.index("Save changes") < labels.index("Archive"), \
+        "primary Save changes must sit left of destructive Archive"
+    save = controls[labels.index("Save changes")]
+    assert save.tag == "a" and save.attrs.get("href") == "/maintenance", \
+        f"Save changes does not return to the list: {save.attrs.get('href')!r}"
+    assert "btn--primary" in save.classes, "Save changes is not the primary action"
+
+
+def test_editing_last_serviced_pushes_next_due_and_status(env):
+    """Editing Last serviced returns the recomputed Next due and Status as
+    out-of-band swaps, so both update at once instead of on the next reload."""
+    from datetime import date, timedelta
+    eq_id = env.equipment("Lathe", interval_days=30)  # never serviced -> due
+    today = date.today()
+    r = env.patch(f"/maintenance/{eq_id}/cell/serviced_at",
+                  data={"value": today.isoformat()})
+    assert r.status_code == 200
+    tree = parse(r.text)
+    due = tree.find(id=f"due-{eq_id}")
+    assert due is not None, f"no out-of-band Next due cell in the response: {r.text!r}"
+    assert due.attrs.get("hx-swap-oob") == "true", "Next due is not an out-of-band swap"
+    expected = (today + timedelta(days=30)).isoformat()
+    assert expected in due.text(), f"Next due not refreshed: {due.text()!r} lacks {expected}"
+    status = tree.find(id=f"status-{eq_id}")
+    assert status is not None and status.attrs.get("hx-swap-oob") == "true", \
+        "Status was not pushed as an out-of-band swap"
+    assert "OK" in status.text(), f"Status not refreshed after servicing: {status.text()!r}"
+
+
+def test_editing_interval_pushes_next_due(env):
+    """Interval also moves Next due, so it refreshes the same way with no reload."""
+    from datetime import date, timedelta
+    eq_id = env.equipment("Lathe", interval_days=30)
+    serviced = date.today() - timedelta(days=10)
+    env.service_log(eq_id, serviced_at=serviced)
+    r = env.patch(f"/maintenance/{eq_id}/cell/interval_days", data={"value": "60"})
+    assert r.status_code == 200
+    due = parse(r.text).find(id=f"due-{eq_id}")
+    assert due is not None and due.attrs.get("hx-swap-oob") == "true"
+    assert (serviced + timedelta(days=60)).isoformat() in due.text(), \
+        f"Next due did not follow the new interval: {due.text()!r}"
+
+
+def test_unrelated_edit_leaves_next_due_alone(env):
+    """A field that does not move the due date pushes nothing extra: only the edited
+    cell comes back, so the list is not churned on every keystroke."""
+    eq_id = env.equipment("Lathe", last_cost=10)
+    r = env.patch(f"/maintenance/{eq_id}/cell/last_cost", data={"value": "20"})
+    assert r.status_code == 200
+    tree = parse(r.text)
+    assert tree.find(id=f"due-{eq_id}") is None, "an unrelated edit still swapped Next due"
+    assert tree.find(id=f"status-{eq_id}") is None, "an unrelated edit still swapped Status"
+
+
+def test_list_row_due_and_status_cells_carry_ids(env):
+    """The list row's Next due and Status cells are addressable, which is what lets
+    an inline edit target them without redrawing the row."""
+    eq_id = env.equipment("Lathe")
+    tree = parse(env.get("/maintenance").text)
+    assert tree.find(id=f"due-{eq_id}") is not None, "the Next due cell has no id to target"
+    assert tree.find(id=f"status-{eq_id}") is not None, "the Status cell has no id to target"
+
+
 def test_status_card_colours_known(env):
     """A26: an unsupported colour silently renders grey, so assert the real ones."""
     env.equipment("Overdue lathe")
