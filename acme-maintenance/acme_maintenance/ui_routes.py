@@ -68,6 +68,9 @@ CELL_TYPES = {
     "notes": "text",
     "instructions": "textarea",
 }
+# The fields whose edit moves the computed Next-due date and Status. Editing either
+# has to push both cells fresh, since neither is typed by hand.
+DUE_FIELDS = {"serviced_at", "interval_days"}
 CELL_LABELS = {
     "name": "Equipment name",
     "location": "Location",
@@ -200,6 +203,25 @@ def _status_badge(status: str) -> Span:
     return Span(label, cls=cls)
 
 
+def _due_cell(item: dict, *, oob: bool = False) -> Td:
+    """The Next-due cell, on the list row and the detail card alike. It carries a
+    stable id so an edit to Last serviced or Interval can swap the freshly computed
+    date straight in, with no page reload."""
+    attrs: dict = {"id": f"due-{item['id']}"}
+    if oob:
+        attrs["hx_swap_oob"] = "true"
+    return Td(item.get("due_date") or EMPTY, cls="cell", **attrs)
+
+
+def _status_cell(item: dict, *, oob: bool = False) -> Td:
+    """The status badge cell, refreshed together with Next due when the due date
+    moves. The filter value stays on it so the list column filter keeps working."""
+    attrs: dict = {"id": f"status-{item['id']}", "data-filter-value": item["status"]}
+    if oob:
+        attrs["hx_swap_oob"] = "true"
+    return Td(_status_badge(item["status"]), cls="cell", **attrs)
+
+
 def _cell(item: dict, field: str, *, can_edit: bool, locations: list[str] | None = None):
     """The house display cell for one field, pointed at this module's edit route."""
     equipment_id = str(item["id"])
@@ -253,10 +275,9 @@ def _row(item: dict, *, locations: list[str] | None, can_edit: bool) -> Tr:
         _cell(item, "location", can_edit=can_edit, locations=locations),
         _cell(item, "serviced_at", can_edit=can_edit),
         _cell(item, "interval_days", can_edit=can_edit),
-        Td(item.get("due_date") or EMPTY, cls="cell"),
+        _due_cell(item),
         _cell(item, "last_cost", can_edit=can_edit),
-        Td(_status_badge(item["status"]), cls="cell",
-           **{"data-filter-value": item["status"]}),
+        _status_cell(item),
         Td(_row_action(item, can_edit=can_edit), cls="cell cell--actions"),
         cls="data-row")
 
@@ -395,9 +416,11 @@ def _detail_view(item: dict, logs: list[dict], files: list[dict], *,
     equipment_id = str(item["id"])
     actions = []
     if can_edit:
-        actions.append(Button("Mark serviced", type="button", cls="btn btn--primary",
-                              hx_post=f"/maintenance/{equipment_id}/mark-serviced",
-                              hx_target=f"#{DETAIL_ID}", hx_swap="outerHTML"))
+        # Primary action on the left, destructive (archive) on the right. Every cell
+        # here saves itself as it is edited, so this does not re-save; it is the clear
+        # way back to the list the page otherwise lacked (GDR 2b, 2c). Marking an item
+        # serviced stays on the list page, where it acts on the row.
+        actions.append(A("Save changes", href="/maintenance", cls="btn btn--primary"))
         if item.get("archived"):
             actions.append(Button("Restore", type="button", cls="btn btn--sm btn--ghost",
                                   hx_post=f"/maintenance/{equipment_id}/restore?from=detail",
@@ -416,10 +439,8 @@ def _detail_view(item: dict, logs: list[dict], files: list[dict], *,
             _detail_field("Last serviced", item, "serviced_at", locations=None, can_edit=can_edit),
             _detail_field("Interval (days)", item, "interval_days", locations=None,
                           can_edit=can_edit),
-            Tr(Td("Next due", cls="detail-label"),
-               Td(item.get("due_date") or EMPTY, cls="cell")),
-            Tr(Td("Status", cls="detail-label"),
-               Td(_status_badge(item["status"]), cls="cell")),
+            Tr(Td("Next due", cls="detail-label"), _due_cell(item)),
+            Tr(Td("Status", cls="detail-label"), _status_cell(item)),
             _detail_field("Last cost", item, "last_cost", locations=None, can_edit=can_edit),
             _detail_field("Notes", item, "notes", locations=None, can_edit=can_edit),
             cls="detail-table"), cls="detail-card"),
@@ -657,22 +678,6 @@ def setup_ui_routes(app) -> None:
             message += f", {skipped} skipped because they are no longer there"
         return await _list_fragment(request, message=message)
 
-    @app.post("/maintenance/{equipment_id}/mark-serviced")
-    async def maintenance_mark_one_serviced(request: Request, equipment_id: str):
-        status, payload = await _call(request, "post", f"{API}/mark-serviced",
-                                      json={"ids": [equipment_id]})
-        if status == 401:
-            return _login_fragment()
-        if status != 200:
-            return HTMLResponse("", status_code=status or 502,
-                                headers=toast_header(_detail_message(payload)
-                                               or "It was not marked serviced", "error"))
-        if not payload.get("updated"):
-            return await _detail_fragment(request, equipment_id, kind="error",
-                                          message="That equipment is no longer there")
-        return await _detail_fragment(request, equipment_id,
-                                      message="Marked serviced today")
-
     @app.delete("/maintenance/{equipment_id}/service-log/{log_id}")
     async def maintenance_undo_service(request: Request, equipment_id: str, log_id: str):
         status, payload = await _call(request, "delete",
@@ -773,7 +778,14 @@ def setup_ui_routes(app) -> None:
             editor.attrs["class"] = (editor.attrs.get("class", "") + " cell--error").strip()
             editor.attrs["title"] = f"Not saved: {message}"
             return HTMLResponse(to_xml(editor), headers=toast_header(message, "error"))
-        return HTMLResponse(to_xml(_cell(payload, field, can_edit=True, locations=locations)))
+        html = to_xml(_cell(payload, field, can_edit=True, locations=locations))
+        if field in DUE_FIELDS:
+            # Last serviced and Interval both move the computed Next due and Status,
+            # which are display-only cells the edit does not touch. Push them fresh
+            # in the same response so they update at once, not on the next reload.
+            html += to_xml(_due_cell(payload, oob=True))
+            html += to_xml(_status_cell(payload, oob=True))
+        return HTMLResponse(html)
 
     # ── files: the contract the shared files section calls ──
 
