@@ -140,7 +140,9 @@ required keys:
 
 - `handler`: a dotted `module:function` string (here
   `acme_maintenance.search:global_search`) for an async function returning
-  `{result_key: [rows]}`.
+  `{result_key: [rows]}`. It is exactly one module path, one `:`, one function
+  name, and the loader resolves it to source inside this module's own package
+  (a handler that resolves into core or another module is rejected at load).
 - `result_key`: the list field those rows come back under, either `"items"` or
   `"entries"`. Any other value returns rows the aggregator never reads.
 - `permission`: a real Celerp permission key from the same fixed registry the
@@ -148,14 +150,21 @@ required keys:
   public.
 
 Each row is a canonical dict: `id`, `label`, `href`, and an optional `subtitle`.
-`href` must be an app-local single-slash path Celerp can route, never an off-site
-or scheme URL; the aggregator validates every row against this shape and drops
-any that does not match. `acme_maintenance/search.py` ships a read-only stub so
-the sample runs without a database; replace its body with a query against your
-own tables, scoped to the company id the aggregator passes in, mapping each match
-to a canonical row. `python lint.py your-thing/` flags a descriptor given as a
-list instead of one dict, missing a key, carrying an unknown one, or naming a
-`result_key` outside those two.
+`href` must be an app-local path Celerp can route: it starts with a single `/`,
+never `//`, and carries no backslash or ASCII control character, so it can only
+link within this app and never off-site. The aggregator validates every row, and
+a single malformed row degrades your whole provider (all or nothing), not just
+that row, so return only well-formed canonical rows. Return an empty list only
+for a genuine no-match, where the query ran and found nothing; on an actual
+failure raise and let the exception propagate, so the aggregator marks only your
+provider degraded and still returns the other providers' results. Swallowing the
+error into an empty list reports "nothing here" for "we could not ask".
+`acme_maintenance/search.py` ships a read-only stub so the sample runs without a
+database; replace its body with a query against your own tables, scoped to the
+company id the aggregator passes in, mapping each match to a canonical row.
+`python lint.py your-thing/` flags a descriptor given as a list instead of one
+dict, missing a key, carrying an unknown one, naming a `result_key` outside those
+two, or a handler that is not a single `module:function` string.
 
 ## What to reach for next
 

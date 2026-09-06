@@ -246,6 +246,24 @@ class TestSearchProviderSlot(unittest.TestCase):
         self.assertTrue(any("search_provider" in p for p in problems),
                         f"a non-object descriptor must be reported: {problems}")
 
+    def test_malformed_handler_syntax_flagged(self):
+        # The core loader resolves the handler as exactly module:function: one
+        # colon, a non-empty module path and a non-empty function name, no
+        # whitespace (celerp/modules/loader.py _prepare_search_provider). A
+        # handler that is a non-empty string but not that shape passes the old
+        # emptiness check yet fails to resolve at load, so lint.py must reject
+        # every malformed shape here, not just the empty one.
+        for handler in ("run_query", "a:b:c", ":go", "thing.search:",
+                        "thing search:go", "thing.search: go"):
+            with self.subTest(handler=handler):
+                folder = self._provider(
+                    '{"handler": "%s", "result_key": "items", '
+                    '"permission": "view_inventory"}' % handler)
+                problems = lint.lint(folder)
+                self.assertTrue(
+                    any("search_provider" in p and "handler" in p for p in problems),
+                    f"malformed handler {handler!r} not reported: {problems}")
+
 
 def tearDownModule():
     for path in pathlib.Path(tempfile.gettempdir()).glob("tmp*"):

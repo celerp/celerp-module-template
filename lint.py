@@ -147,9 +147,21 @@ def _search_provider_problems(manifest: dict) -> list[str]:
         problems.append(f"search_provider has unknown key {key!r} - "
                         "Celerp reads none of it, so it does nothing at load time")
     handler = item.get("handler")
-    if "handler" in item and not (isinstance(handler, str) and handler.strip()):
-        problems.append("search_provider has an empty handler - "
-                        "it must be a dotted 'module:function' string")
+    if "handler" in item:
+        if not (isinstance(handler, str) and handler.strip()):
+            problems.append("search_provider has an empty handler - "
+                            "it must be a dotted 'module:function' string")
+        elif (handler.count(":") != 1 or any(ch.isspace() for ch in handler)
+              or not all(handler.split(":"))):
+            # The core loader resolves the handler as exactly module:function -
+            # one colon, a non-empty module path and function name, no whitespace
+            # (loader._prepare_search_provider / slots.resolve_handler). A string
+            # that is not that shape passes an emptiness check but fails to
+            # resolve at load, so it is caught here.
+            problems.append(f"search_provider handler {handler!r} is not a dotted "
+                            "'module:function' string - it needs exactly one ':' "
+                            "separating a non-empty module path from a non-empty "
+                            "function name, with no whitespace")
     permission = item.get("permission")
     if "permission" in item and not (isinstance(permission, str) and permission.strip()):
         problems.append("search_provider has an empty permission - "
