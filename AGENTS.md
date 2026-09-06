@@ -53,18 +53,22 @@ keys.
 
 The `search_provider` slot is the same discipline applied to a descriptor rather
 than a manifest. It contributes a read-only, company-scoped, permission-gated
-provider to Celerp's aggregated global search: the aggregator calls your handler
-once per query, gated by the descriptor's `permission`, reads your rows back
-under `result_key`, caps the count, and stamps each row with this module's
-identity, so the provider only finds and returns its own matches. A descriptor
-carries exactly three keys, all required. `handler` is a dotted
-`module:function` string (here `acme_maintenance.search:global_search`) returning
-`{result_key: [rows]}`. `result_key` is the list field those rows come back
-under and must be `"items"` or `"entries"`; any other value returns rows the
-aggregator never reads. `permission` is a real Celerp permission key from the
-same closed registry as rule 4, never left off, because a provider is never
-implicitly public. `lint.py` flags a descriptor that is missing a key, carries
-an unknown one, or names a `result_key` outside the two the aggregator reads.
+provider to Celerp's aggregated global search: the aggregator calls your async
+handler once per query, gated by the descriptor's `permission`, reads your rows
+back under `result_key`, and caps the count it keeps, so the provider only finds
+and returns its own matches. Unlike `nav`, this slot is a single descriptor, not
+a list: a module contributes exactly one search provider, and the core loader
+reads one dict. It carries exactly three keys, all required. `handler` is a
+dotted `module:function` string (here `acme_maintenance.search:global_search`)
+for an async function returning `{result_key: [rows]}`. `result_key` is the list
+field those rows come back under and must be `"items"` or `"entries"`; any other
+value returns rows the aggregator never reads. `permission` is a real Celerp
+permission key from the same closed registry as rule 4, never left off, because a
+provider is never implicitly public. Each row is a canonical dict (`id`, `label`,
+`href`, optional `subtitle`); `href` must be an app-local single-slash path, and
+the aggregator drops any row that does not match that shape. `lint.py` flags a
+descriptor given as a list instead of one dict, missing a key, carrying an
+unknown one, or naming a `result_key` outside the two the aggregator reads.
 
 **6. Your tables come from your models, not from your migrations.** Module models
 register on Celerp's shared metadata when the loader imports them, and Celerp runs

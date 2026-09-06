@@ -178,13 +178,14 @@ class TestManifestKeys(unittest.TestCase):
 
 
 class TestSearchProviderSlot(unittest.TestCase):
-    """The search_provider slot descriptor: three required keys, a fixed
-    result_key vocabulary, and no invented keys. A misspelled or missing key
-    ships a provider the aggregator cannot call or a gate it cannot read, so
-    lint.py has to name it before a restart."""
+    """The search_provider slot descriptor: exactly one dict (never a list),
+    three required keys, a fixed result_key vocabulary, and no invented keys. A
+    misspelled, missing, or duplicated descriptor ships a provider the aggregator
+    cannot call or a gate it cannot read, so lint.py has to name it before a
+    restart."""
 
     def _provider(self, entry: str) -> pathlib.Path:
-        return _module("acme-thing", extra=f'"slots": {{"search_provider": [{entry}]}},')
+        return _module("acme-thing", extra=f'"slots": {{"search_provider": {entry}}},')
 
     def test_template_sample_search_provider_clean(self):
         self.assertEqual(lint.lint(MODULE), [])
@@ -226,6 +227,24 @@ class TestSearchProviderSlot(unittest.TestCase):
         problems = lint.lint(folder)
         self.assertTrue(any("search_provider" in p and "result_key" in p for p in problems),
                         problems)
+
+    def test_list_form_rejected(self):
+        # A module contributes exactly one search provider, expressed as a single
+        # dict. A list (even a well-formed one) is the old shape the core loader no
+        # longer accepts, so the linter must reject it and name the one-descriptor
+        # rule rather than silently validating the first entry.
+        folder = self._provider('[{"handler": "thing.search:go", '
+                                '"result_key": "items", "permission": "view_inventory"}]')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p for p in problems),
+                        f"a list descriptor must be reported: {problems}")
+
+    def test_non_object_descriptor_rejected(self):
+        # A scalar where the dict belongs is neither callable nor readable.
+        folder = self._provider('"thing.search:go"')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p for p in problems),
+                        f"a non-object descriptor must be reported: {problems}")
 
 
 def tearDownModule():

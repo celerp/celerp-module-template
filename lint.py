@@ -120,43 +120,45 @@ def _nav_items(manifest: dict) -> list[dict]:
     return []
 
 
-def _search_providers(manifest: dict) -> list[dict]:
-    """The search_provider slot's descriptors, whichever shape the author wrote."""
-    provider = (manifest.get("slots") or {}).get("search_provider")
-    if isinstance(provider, dict):
-        return [provider]
-    if isinstance(provider, list):
-        return [item for item in provider if isinstance(item, dict)]
-    return []
-
-
 def _search_provider_problems(manifest: dict) -> list[str]:
     """Every way a search_provider descriptor is malformed.
 
-    The descriptor must carry exactly handler, result_key, and permission: a
-    missing key ships a provider core cannot use, an unknown key is read past in
-    silence, and a result_key core does not aggregate returns rows nobody sees.
+    A module contributes exactly one search provider, expressed as a single
+    descriptor object: the core loader reads one dict, not a list, so a list or
+    a scalar is rejected outright. The descriptor must carry exactly handler,
+    result_key, and permission: a missing key ships a provider core cannot use,
+    an unknown key is read past in silence, and a result_key core does not
+    aggregate returns rows nobody sees.
     """
+    slots = manifest.get("slots") or {}
+    if "search_provider" not in slots:
+        return []
+    item = slots.get("search_provider")
+    if not isinstance(item, dict):
+        kind = "a list" if isinstance(item, list) else f"a {type(item).__name__}"
+        return ["search_provider must be exactly one descriptor object, not "
+                f"{kind} - a module contributes a single search provider, and the "
+                "core loader reads one dict"]
+
     problems = []
-    for index, item in enumerate(_search_providers(manifest)):
-        for key in sorted(SEARCH_PROVIDER_KEYS - set(item)):
-            problems.append(f"search_provider entry {index} missing required key {key!r}")
-        for key in sorted(k for k in item if k not in SEARCH_PROVIDER_KEYS):
-            problems.append(f"search_provider entry {index} has unknown key {key!r} - "
-                            "Celerp reads none of it, so it does nothing at load time")
-        handler = item.get("handler")
-        if "handler" in item and not (isinstance(handler, str) and handler.strip()):
-            problems.append(f"search_provider entry {index} has an empty handler - "
-                            "it must be a dotted 'module:function' string")
-        permission = item.get("permission")
-        if "permission" in item and not (isinstance(permission, str) and permission.strip()):
-            problems.append(f"search_provider entry {index} has an empty permission - "
-                            "a provider is never implicitly public; name a real "
-                            "Celerp permission key")
-        result_key = item.get("result_key")
-        if "result_key" in item and result_key not in SEARCH_PROVIDER_RESULT_KEYS:
-            problems.append(f"search_provider entry {index} has result_key {result_key!r} - "
-                            f"it must be one of {sorted(SEARCH_PROVIDER_RESULT_KEYS)}")
+    for key in sorted(SEARCH_PROVIDER_KEYS - set(item)):
+        problems.append(f"search_provider missing required key {key!r}")
+    for key in sorted(k for k in item if k not in SEARCH_PROVIDER_KEYS):
+        problems.append(f"search_provider has unknown key {key!r} - "
+                        "Celerp reads none of it, so it does nothing at load time")
+    handler = item.get("handler")
+    if "handler" in item and not (isinstance(handler, str) and handler.strip()):
+        problems.append("search_provider has an empty handler - "
+                        "it must be a dotted 'module:function' string")
+    permission = item.get("permission")
+    if "permission" in item and not (isinstance(permission, str) and permission.strip()):
+        problems.append("search_provider has an empty permission - "
+                        "a provider is never implicitly public; name a real "
+                        "Celerp permission key")
+    result_key = item.get("result_key")
+    if "result_key" in item and result_key not in SEARCH_PROVIDER_RESULT_KEYS:
+        problems.append(f"search_provider has result_key {result_key!r} - "
+                        f"it must be one of {sorted(SEARCH_PROVIDER_RESULT_KEYS)}")
     return problems
 
 
