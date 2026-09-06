@@ -127,6 +127,30 @@ listing, so a user reading either one sees the same answer.
   community directory. The "Sell your module" section of the community-modules
   README walks through it.
 
+## The search_provider slot
+
+Alongside `nav`, this template fills the `search_provider` slot, which
+contributes a read-only, company-scoped, permission-gated provider to Celerp's
+aggregated global search. The aggregator calls your handler once per query,
+gates it by the descriptor's permission, reads your rows back under
+`result_key`, caps the count, and stamps each row with this module's identity,
+so the provider only finds and returns its own matches. A descriptor carries
+exactly three required keys:
+
+- `handler`: a dotted `module:function` string (here
+  `acme_maintenance.search:global_search`) returning `{result_key: [rows]}`.
+- `result_key`: the list field those rows come back under, either `"items"` or
+  `"entries"`. Any other value returns rows the aggregator never reads.
+- `permission`: a real Celerp permission key from the same fixed registry the
+  nav entry uses. It is never left off, because a provider is never implicitly
+  public.
+
+`acme_maintenance/search.py` ships a read-only stub so the sample runs without a
+database; replace its body with a query against your own tables, scoped to the
+company id the aggregator passes in. `python lint.py your-thing/` flags a
+descriptor missing a key, carrying an unknown one, or naming a `result_key`
+outside those two.
+
 ## What to reach for next
 
 - More sidebar behavior and other slots (`bulk_action`, `item_action`,
