@@ -58,6 +58,20 @@ PLUGIN_MANIFEST = {
             # request are one decision.
             "permission": "view_inventory",
         }],
+        # `search_provider` contributes this module's rows to the aggregated
+        # global search. The aggregator calls the handler company-scoped, gated
+        # by the same permission key, and reads the rows back under result_key;
+        # it caps the count, so the provider only has to find and return its own
+        # matches. Unlike `nav`, this is a single descriptor, not a list: a
+        # module contributes exactly one search provider. It carries exactly
+        # three keys, all required: a dotted module:function handler returning
+        # {result_key: [rows]}, a result_key of "items" or "entries", and a real
+        # Celerp permission key (never implicitly public).
+        "search_provider": {
+            "handler": "acme_maintenance.search:global_search",
+            "result_key": "items",
+            "permission": "view_inventory",
+        },
     },
 
     # ── DB migrations ─────────────────────────────────────────────────────────

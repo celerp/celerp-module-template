@@ -127,6 +127,45 @@ listing, so a user reading either one sees the same answer.
   community directory. The "Sell your module" section of the community-modules
   README walks through it.
 
+## The search_provider slot
+
+Alongside `nav`, this template fills the `search_provider` slot, which
+contributes a read-only, company-scoped, permission-gated provider to Celerp's
+aggregated global search. The aggregator calls your async handler once per
+query, gates it by the descriptor's permission, reads your rows back under
+`result_key`, and caps the count it keeps, so the provider only finds and
+returns its own matches. Unlike `nav`, this slot is a single descriptor, not a
+list: a module contributes exactly one search provider. It carries exactly three
+required keys:
+
+- `handler`: a dotted `module:function` string (here
+  `acme_maintenance.search:global_search`) for an async function returning
+  `{result_key: [rows]}`. It is exactly one module path, one `:`, one function
+  name, and the loader resolves it to source inside this module's own package
+  (a handler that resolves into core or another module is rejected at load).
+- `result_key`: the list field those rows come back under, either `"items"` or
+  `"entries"`. Any other value returns rows the aggregator never reads.
+- `permission`: a real Celerp permission key from the same fixed registry the
+  nav entry uses. It is never left off, because a provider is never implicitly
+  public.
+
+Each row is a canonical dict: `id`, `label`, `href`, and an optional `subtitle`.
+`href` must be an app-local path Celerp can route: it starts with a single `/`,
+never `//`, and carries no backslash or ASCII control character, so it can only
+link within this app and never off-site. The aggregator validates every row, and
+a single malformed row degrades your whole provider (all or nothing), not just
+that row, so return only well-formed canonical rows. Return an empty list only
+for a genuine no-match, where the query ran and found nothing; on an actual
+failure raise and let the exception propagate, so the aggregator marks only your
+provider degraded and still returns the other providers' results. Swallowing the
+error into an empty list reports "nothing here" for "we could not ask".
+`acme_maintenance/search.py` ships a read-only stub so the sample runs without a
+database; replace its body with a query against your own tables, scoped to the
+company id the aggregator passes in, mapping each match to a canonical row.
+`python lint.py your-thing/` flags a descriptor given as a list instead of one
+dict, missing a key, carrying an unknown one, naming a `result_key` outside those
+two, or a handler that is not a single `module:function` string.
+
 ## What to reach for next
 
 - More sidebar behavior and other slots (`bulk_action`, `item_action`,
