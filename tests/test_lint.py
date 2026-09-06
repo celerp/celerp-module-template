@@ -177,6 +177,57 @@ class TestManifestKeys(unittest.TestCase):
         self.assertEqual([p for p in lint.lint(folder) if "unknown" in p.lower()], [])
 
 
+class TestSearchProviderSlot(unittest.TestCase):
+    """The search_provider slot descriptor: three required keys, a fixed
+    result_key vocabulary, and no invented keys. A misspelled or missing key
+    ships a provider the aggregator cannot call or a gate it cannot read, so
+    lint.py has to name it before a restart."""
+
+    def _provider(self, entry: str) -> pathlib.Path:
+        return _module("acme-thing", extra=f'"slots": {{"search_provider": [{entry}]}},')
+
+    def test_template_sample_search_provider_clean(self):
+        self.assertEqual(lint.lint(MODULE), [])
+
+    def test_valid_provider_not_flagged(self):
+        folder = self._provider('{"handler": "thing.search:go", '
+                                '"result_key": "items", "permission": "view_inventory"}')
+        self.assertEqual([p for p in lint.lint(folder) if "search_provider" in p], [])
+
+    def test_missing_handler_flagged(self):
+        folder = self._provider('{"result_key": "items", "permission": "view_inventory"}')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p and "handler" in p for p in problems),
+                        problems)
+
+    def test_missing_result_key_flagged(self):
+        folder = self._provider('{"handler": "thing.search:go", '
+                                '"permission": "view_inventory"}')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p and "result_key" in p for p in problems),
+                        problems)
+
+    def test_missing_permission_flagged(self):
+        folder = self._provider('{"handler": "thing.search:go", "result_key": "items"}')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p and "permission" in p for p in problems),
+                        problems)
+
+    def test_unknown_provider_key_flagged(self):
+        folder = self._provider('{"handler": "thing.search:go", "result_key": "items", '
+                                '"permission": "view_inventory", "public": True}')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p and "public" in p for p in problems),
+                        problems)
+
+    def test_bad_result_key_flagged(self):
+        folder = self._provider('{"handler": "thing.search:go", '
+                                '"result_key": "widgets", "permission": "view_inventory"}')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p and "result_key" in p for p in problems),
+                        problems)
+
+
 def tearDownModule():
     for path in pathlib.Path(tempfile.gettempdir()).glob("tmp*"):
         if (path / "acme-thing").exists() or (path / "renamed-maintenance").exists():
