@@ -177,6 +177,94 @@ class TestManifestKeys(unittest.TestCase):
         self.assertEqual([p for p in lint.lint(folder) if "unknown" in p.lower()], [])
 
 
+class TestSearchProviderSlot(unittest.TestCase):
+    """The search_provider slot descriptor: exactly one dict (never a list),
+    three required keys, a fixed result_key vocabulary, and no invented keys. A
+    misspelled, missing, or duplicated descriptor ships a provider the aggregator
+    cannot call or a gate it cannot read, so lint.py has to name it before a
+    restart."""
+
+    def _provider(self, entry: str) -> pathlib.Path:
+        return _module("acme-thing", extra=f'"slots": {{"search_provider": {entry}}},')
+
+    def test_template_sample_search_provider_clean(self):
+        self.assertEqual(lint.lint(MODULE), [])
+
+    def test_valid_provider_not_flagged(self):
+        folder = self._provider('{"handler": "thing.search:go", '
+                                '"result_key": "items", "permission": "view_inventory"}')
+        self.assertEqual([p for p in lint.lint(folder) if "search_provider" in p], [])
+
+    def test_missing_handler_flagged(self):
+        folder = self._provider('{"result_key": "items", "permission": "view_inventory"}')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p and "handler" in p for p in problems),
+                        problems)
+
+    def test_missing_result_key_flagged(self):
+        folder = self._provider('{"handler": "thing.search:go", '
+                                '"permission": "view_inventory"}')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p and "result_key" in p for p in problems),
+                        problems)
+
+    def test_missing_permission_flagged(self):
+        folder = self._provider('{"handler": "thing.search:go", "result_key": "items"}')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p and "permission" in p for p in problems),
+                        problems)
+
+    def test_unknown_provider_key_flagged(self):
+        folder = self._provider('{"handler": "thing.search:go", "result_key": "items", '
+                                '"permission": "view_inventory", "public": True}')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p and "public" in p for p in problems),
+                        problems)
+
+    def test_bad_result_key_flagged(self):
+        folder = self._provider('{"handler": "thing.search:go", '
+                                '"result_key": "widgets", "permission": "view_inventory"}')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p and "result_key" in p for p in problems),
+                        problems)
+
+    def test_list_form_rejected(self):
+        # A module contributes exactly one search provider, expressed as a single
+        # dict. A list (even a well-formed one) is the old shape the core loader no
+        # longer accepts, so the linter must reject it and name the one-descriptor
+        # rule rather than silently validating the first entry.
+        folder = self._provider('[{"handler": "thing.search:go", '
+                                '"result_key": "items", "permission": "view_inventory"}]')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p for p in problems),
+                        f"a list descriptor must be reported: {problems}")
+
+    def test_non_object_descriptor_rejected(self):
+        # A scalar where the dict belongs is neither callable nor readable.
+        folder = self._provider('"thing.search:go"')
+        problems = lint.lint(folder)
+        self.assertTrue(any("search_provider" in p for p in problems),
+                        f"a non-object descriptor must be reported: {problems}")
+
+    def test_malformed_handler_syntax_flagged(self):
+        # The core loader resolves the handler as exactly module:function: one
+        # colon, a non-empty module path and a non-empty function name, no
+        # whitespace (celerp/modules/loader.py _prepare_search_provider). A
+        # handler that is a non-empty string but not that shape passes the old
+        # emptiness check yet fails to resolve at load, so lint.py must reject
+        # every malformed shape here, not just the empty one.
+        for handler in ("run_query", "a:b:c", ":go", "thing.search:",
+                        "thing search:go", "thing.search: go"):
+            with self.subTest(handler=handler):
+                folder = self._provider(
+                    '{"handler": "%s", "result_key": "items", '
+                    '"permission": "view_inventory"}' % handler)
+                problems = lint.lint(folder)
+                self.assertTrue(
+                    any("search_provider" in p and "handler" in p for p in problems),
+                    f"malformed handler {handler!r} not reported: {problems}")
+
+
 def tearDownModule():
     for path in pathlib.Path(tempfile.gettempdir()).glob("tmp*"):
         if (path / "acme-thing").exists() or (path / "renamed-maintenance").exists():

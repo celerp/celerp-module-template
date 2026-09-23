@@ -51,6 +51,33 @@ nothing at all. There is no `icon` key either. The loader reads route modules by
 name (`celerp/modules/loader.py:730`), and `lint.py` holds the full list of accepted
 keys.
 
+The `search_provider` slot is the same discipline applied to a descriptor rather
+than a manifest. It contributes a read-only, company-scoped, permission-gated
+provider to Celerp's aggregated global search: the aggregator calls your async
+handler once per query, gated by the descriptor's `permission`, reads your rows
+back under `result_key`, and caps the count it keeps, so the provider only finds
+and returns its own matches. Unlike `nav`, this slot is a single descriptor, not
+a list: a module contributes exactly one search provider, and the core loader
+reads one dict. It carries exactly three keys, all required. `handler` is a
+dotted `module:function` string (here `acme_maintenance.search:global_search`)
+for an async function returning `{result_key: [rows]}`: exactly one module path,
+one `:`, one function name, and the loader resolves it to source inside this
+module's own package, never core or another module. `result_key` is the list
+field those rows come back under and must be `"items"` or `"entries"`; any other
+value returns rows the aggregator never reads. `permission` is a real Celerp
+permission key from the same closed registry as rule 4, never left off, because a
+provider is never implicitly public. Each row is a canonical dict (`id`, `label`,
+`href`, optional `subtitle`); `href` must be an app-local path that starts with a
+single `/`, never `//`, with no backslash or control character. A single
+malformed row degrades your whole provider (all or nothing), not just that row,
+so return only well-formed rows. Return an empty list only for a genuine
+no-match; on an actual failure raise and let it propagate, so the aggregator
+marks only your provider degraded and still returns the others' results.
+Swallowing the error into an empty list reports "nothing here" for "we could not
+ask". `lint.py` flags a descriptor given as a list instead of one dict, missing a
+key, carrying an unknown one, naming a `result_key` outside the two the
+aggregator reads, or a handler that is not a single `module:function` string.
+
 **6. Your tables come from your models, not from your migrations.** Module models
 register on Celerp's shared metadata when the loader imports them, and Celerp runs
 `create_all` after loading modules (`celerp/main.py:195`), so a new table appears on

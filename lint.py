@@ -43,6 +43,14 @@ NAV_ITEM_KEYS = {
     "group", "key", "href", "label", "label_key", "order", "settings_href",
     "permission",
 }
+# The keys a search_provider slot descriptor may carry, and all three are
+# required: the loader calls "handler", returns rows under "result_key", and
+# gates the provider by "permission". A missing or misspelled key ships a
+# provider the aggregator cannot call or a gate it cannot read, in silence.
+SEARCH_PROVIDER_KEYS = {"handler", "result_key", "permission"}
+# result_key names the list field the provider returns its rows under. The
+# aggregator reads exactly these two; any other value returns rows it never sees.
+SEARCH_PROVIDER_RESULT_KEYS = {"items", "entries"}
 # min_celerp_version is optional, but when set it must be a dotted version so
 # the loader's comparison means something.
 MIN_VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
@@ -110,6 +118,60 @@ def _nav_items(manifest: dict) -> list[dict]:
     if isinstance(nav, list):
         return [item for item in nav if isinstance(item, dict)]
     return []
+
+
+def _search_provider_problems(manifest: dict) -> list[str]:
+    """Every way a search_provider descriptor is malformed.
+
+    A module contributes exactly one search provider, expressed as a single
+    descriptor object: the core loader reads one dict, not a list, so a list or
+    a scalar is rejected outright. The descriptor must carry exactly handler,
+    result_key, and permission: a missing key ships a provider core cannot use,
+    an unknown key is read past in silence, and a result_key core does not
+    aggregate returns rows nobody sees.
+    """
+    slots = manifest.get("slots") or {}
+    if "search_provider" not in slots:
+        return []
+    item = slots.get("search_provider")
+    if not isinstance(item, dict):
+        kind = "a list" if isinstance(item, list) else f"a {type(item).__name__}"
+        return ["search_provider must be exactly one descriptor object, not "
+                f"{kind} - a module contributes a single search provider, and the "
+                "core loader reads one dict"]
+
+    problems = []
+    for key in sorted(SEARCH_PROVIDER_KEYS - set(item)):
+        problems.append(f"search_provider missing required key {key!r}")
+    for key in sorted(k for k in item if k not in SEARCH_PROVIDER_KEYS):
+        problems.append(f"search_provider has unknown key {key!r} - "
+                        "Celerp reads none of it, so it does nothing at load time")
+    handler = item.get("handler")
+    if "handler" in item:
+        if not (isinstance(handler, str) and handler.strip()):
+            problems.append("search_provider has an empty handler - "
+                            "it must be a dotted 'module:function' string")
+        elif (handler.count(":") != 1 or any(ch.isspace() for ch in handler)
+              or not all(handler.split(":"))):
+            # The core loader resolves the handler as exactly module:function -
+            # one colon, a non-empty module path and function name, no whitespace
+            # (loader._prepare_search_provider / slots.resolve_handler). A string
+            # that is not that shape passes an emptiness check but fails to
+            # resolve at load, so it is caught here.
+            problems.append(f"search_provider handler {handler!r} is not a dotted "
+                            "'module:function' string - it needs exactly one ':' "
+                            "separating a non-empty module path from a non-empty "
+                            "function name, with no whitespace")
+    permission = item.get("permission")
+    if "permission" in item and not (isinstance(permission, str) and permission.strip()):
+        problems.append("search_provider has an empty permission - "
+                        "a provider is never implicitly public; name a real "
+                        "Celerp permission key")
+    result_key = item.get("result_key")
+    if "result_key" in item and result_key not in SEARCH_PROVIDER_RESULT_KEYS:
+        problems.append(f"search_provider has result_key {result_key!r} - "
+                        f"it must be one of {sorted(SEARCH_PROVIDER_RESULT_KEYS)}")
+    return problems
 
 
 def _str_rendered_fragments(py_file: Path) -> list[str]:
@@ -183,6 +245,7 @@ def lint(folder: Path) -> list[str]:
     if not (manifest.get("slots") or manifest.get("api_routes") or manifest.get("ui_routes")):
         problems.append("manifest declares no slots and no routes - the module does nothing")
     problems.extend(_manifest_key_problems(manifest))
+    problems.extend(_search_provider_problems(manifest))
 
     for py_file in folder.rglob("*.py"):
         rel = py_file.relative_to(folder)
