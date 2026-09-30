@@ -202,9 +202,9 @@ def test_detail_header_saves_and_returns_not_marks_serviced(env):
 def test_editing_last_serviced_pushes_next_due_and_status(env):
     """Editing Last serviced returns the recomputed Next due and Status as
     out-of-band swaps, so both update at once instead of on the next reload."""
-    from datetime import date, timedelta
+    from datetime import datetime, timedelta, timezone
     eq_id = env.equipment("Lathe", interval_days=30)  # never serviced -> due
-    today = date.today()
+    today = datetime.now(timezone.utc).date()  # the date the route checks against
     r = env.patch(f"/maintenance/{eq_id}/cell/serviced_at",
                   data={"value": today.isoformat()})
     assert r.status_code == 200
