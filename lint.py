@@ -36,8 +36,10 @@ REQUIRED_FIELDS = ("name", "version", "display_name", "license")
 MANIFEST_KEYS = {
     "name", "version", "display_name", "label", "description", "license", "author",
     "min_celerp_version", "api_routes", "ui_routes", "slots", "migrations",
-    "table_prefix", "depends_on", "soft_depends", "requires", "first_party",
+    "table_prefix", "company_backup", "depends_on", "soft_depends", "requires", "first_party",
 }
+# How each table a module owns travels with a company backup.
+COMPANY_BACKUP_VALUES = {"include", "exclude"}
 # The keys a nav slot entry may carry (ui/components/shell.py builds the sidebar).
 NAV_ITEM_KEYS = {
     "group", "key", "href", "label", "label_key", "order", "settings_href",
@@ -212,6 +214,49 @@ def _called_name(node: ast.Call) -> str | None:
     return None
 
 
+def _owned_tables(folder: Path) -> set[str]:
+    """Tables the module's models or migrations create, by literal name."""
+    tables: set[str] = set()
+    for py_file in folder.rglob("*.py"):
+        try:
+            tree = ast.parse(py_file.read_text())
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "__tablename__" for t in node.targets):
+                value = node.value
+            elif isinstance(node, ast.Call) and _called_name(node) == "create_table" and node.args:
+                value = node.args[0]
+            else:
+                continue
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                tables.add(value.value)
+    return tables
+
+
+def _company_backup_problems(manifest: dict, folder: Path) -> list[str]:
+    """Every table the module owns must say whether it belongs to the company, and so
+    travels with a company backup, or to this installation, like credentials or caches.
+    Celerp refuses to back up a company while one of its module tables is not named."""
+    declared = manifest.get("company_backup", {})
+    if not isinstance(declared, dict):
+        return ["company_backup must map each table name to \"include\" or \"exclude\""]
+    prefix = manifest.get("table_prefix") or ""
+    problems = []
+    for table, how in sorted(declared.items()):
+        if how not in COMPANY_BACKUP_VALUES:
+            problems.append(f"company_backup says {how!r} for {table!r} - it must be \"include\" "
+                            "(company data) or \"exclude\" (installation state such as credentials)")
+        if not (prefix and str(table).startswith(prefix)):
+            problems.append(f"company_backup names {table!r}, which is not one of this module's "
+                            f"tables (they start with table_prefix {prefix!r})")
+    for table in sorted(_owned_tables(folder) - set(declared)):
+        problems.append(f"table {table!r} is not in company_backup - Celerp will refuse to back up "
+                        "a company until it says \"include\" or \"exclude\"")
+    return problems
+
+
 def lint(folder: Path) -> list[str]:
     problems: list[str] = []
     init_file = folder / "__init__.py"
@@ -246,6 +291,7 @@ def lint(folder: Path) -> list[str]:
         problems.append("manifest declares no slots and no routes - the module does nothing")
     problems.extend(_manifest_key_problems(manifest))
     problems.extend(_search_provider_problems(manifest))
+    problems.extend(_company_backup_problems(manifest, folder))
 
     for py_file in folder.rglob("*.py"):
         rel = py_file.relative_to(folder)
