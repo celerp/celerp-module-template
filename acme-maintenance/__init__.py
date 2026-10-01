@@ -87,6 +87,16 @@ PLUGIN_MANIFEST = {
     # if the module is deleted.
     "table_prefix": "acme_",
     "migrations": "acme_maintenance.migrations",
+    # company_backup names every table above and says where it belongs: "include"
+    # for the company's own records, which travel when an owner backs up the company
+    # and restore it elsewhere, or "exclude" for this installation's state, such as
+    # stored credentials, tokens or caches, which never leave it. Celerp refuses to
+    # back up a company while one of your tables is not named here.
+    "company_backup": {
+        "acme_equipment": "include",
+        "acme_service_log": "include",
+        "acme_equipment_file": "include",
+    },
 
     # ── depends_on / requires ─────────────────────────────────────────────────
     # This template needs nothing. If your module depends on another module,

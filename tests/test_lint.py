@@ -273,3 +273,30 @@ def tearDownModule():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCompanyBackup(unittest.TestCase):
+    """Every table the module owns says whether it travels with a company backup."""
+
+    def _folder(self, declared: str) -> pathlib.Path:
+        folder = _module("acme-thing", extra=f'"table_prefix": "acme_", {declared}')
+        (folder / "models.py").write_text('class Thing:\n    __tablename__ = "acme_things"\n', encoding="utf-8")
+        return folder
+
+    def _problems(self, folder: pathlib.Path) -> list[str]:
+        return [p for p in lint.lint(folder) if "company_backup" in p]
+
+    def test_declared_table_clean(self):
+        self.assertEqual(self._problems(self._folder('"company_backup": {"acme_things": "exclude"},')), [])
+
+    def test_undeclared_table_flagged(self):
+        problems = self._problems(self._folder(""))
+        self.assertTrue(any("acme_things" in p and "refuse" in p for p in problems), problems)
+
+    def test_unknown_value_flagged(self):
+        problems = self._problems(self._folder('"company_backup": {"acme_things": "yes"},'))
+        self.assertTrue(any("'yes'" in p for p in problems), problems)
+
+    def test_table_outside_prefix_flagged(self):
+        problems = self._problems(self._folder('"company_backup": {"acme_things": "include", "items": "include"},'))
+        self.assertTrue(any("'items'" in p for p in problems), problems)

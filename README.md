@@ -83,6 +83,10 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    depend on the same key, which is what makes hiding the link and refusing the
    request one decision instead of two.
 4. Rename the tables in `models.py` and the migrations, prefixed with your name.
+   List each one in the manifest's `company_backup` as `"include"` (the company's
+   records, carried by a company backup) or `"exclude"` (this installation's state,
+   such as stored credentials). Celerp refuses to back up a company while one of
+   your tables is not listed.
 5. Copy `acme-maintenance/tests/conftest.py` and keep the suite honest. It stands
    the real API app and the real pages up against SQLite with nothing mocked, so
    a test failure means a user-visible failure.
