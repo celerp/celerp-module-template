@@ -171,6 +171,31 @@ company id the aggregator passes in, mapping each match to a canonical row.
 dict, missing a key, carrying an unknown one, naming a `result_key` outside those
 two, or a handler that is not a single `module:function` string.
 
+## A link on the Pricing tab
+
+From Celerp 2.5.4 a module can put a link on rows of an item's Pricing tab, for
+example a page that suggests a price for one price list:
+
+```python
+"min_celerp_version": "2.5.4",
+"slots": {
+    "pricing_action": [{
+        "label": "Suggest price",
+        "href_template": "/acme-pricing/{entity_id}?list={price_list}&field={field_name}",
+        "show_on": ["sell", "manual", "editable"],
+        "permission": "set_inventory_prices",
+    }],
+},
+```
+
+`{entity_id}` is the item, `{price_list}` the list name and `{field_name}` the
+item field holding that price; each is URL-encoded. `show_on` limits the link to
+rows with every listed trait (`editable`/`readonly`, `sell`/`cost`,
+`manual`/`derived`); leave it out for every row. The link opens your page, and
+that page's route must check `set_inventory_prices` itself. `python lint.py`
+reports an unknown placeholder or trait. The sample module does not use this
+slot, so it still installs on 2.0.0.
+
 ## What to reach for next
 
 - Other slots (`bulk_action`, `item_action`, `doc_detail_actions`,

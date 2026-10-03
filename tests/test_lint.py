@@ -295,6 +295,37 @@ class TestSearchProviderSlot(unittest.TestCase):
                     f"malformed handler {handler!r} not reported: {problems}")
 
 
+
+class TestPricingActionSlot(unittest.TestCase):
+    """The pricing_action slot puts a link on rows of an item's Pricing tab. The
+    loader refuses a malformed entry, which stops the whole module loading, so
+    lint.py reports the same shapes first."""
+
+    def _action(self, entry: str) -> list[str]:
+        folder = _module("acme-thing", extra=f'"slots": {{"pricing_action": [{entry}]}},')
+        return [p for p in lint.lint(folder) if "pricing_action" in p]
+
+    def test_well_formed_action_clean(self):
+        self.assertEqual(self._action(
+            '{"label": "Quote", "show_on": ["sell", "manual"], "presentation": "page", '
+            '"href_template": "/q/{entity_id}?list={price_list}&f={field_name}"}'), [])
+
+    def test_malformed_action_flagged(self):
+        for entry, word in (
+            ('{"label": "Quote"}', "href_template"),
+            ('{"href_template": "/q/{item}"}', "{item}"),
+            ('{"href_template": "/q", "show_on": ["sold"]}', "show_on"),
+            ('{"href_template": "/q", "show_on": "sell"}', "show_on"),
+            ('{"href_template": "/q", "show_on": ["sell", "cost"]}', "never"),
+            ('{"href_template": "/q", "presentation": "modal"}', "presentation"),
+            ('"Quote"', "dict"),
+        ):
+            with self.subTest(entry=entry):
+                problems = self._action(entry)
+                self.assertTrue(any(word in p for p in problems),
+                                f"{entry} not reported with {word!r}: {problems}")
+
+
 def tearDownModule():
     for path in pathlib.Path(tempfile.gettempdir()).glob("tmp*"):
         if (path / "acme-thing").exists() or (path / "renamed-maintenance").exists():

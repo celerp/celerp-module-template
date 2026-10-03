@@ -10,6 +10,7 @@ problems in seconds instead of on a failed boot:
   - the manifest, its slot names and its nav slots use only names Celerp
     actually reads, so a misspelled or invented one is not silently ignored
     at load time
+  - pricing_action entries have the shape the loader accepts
   - no source file imports a protected celerp internal (revenue-gated; the
     loader rejects modules that do)
   - no fragment is rendered with str(); FT.__str__ returns the element id, so
@@ -44,7 +45,7 @@ MANIFEST_KEYS = {
 SLOT_NAMES = {
     "nav", "search_provider", "bulk_action", "item_action", "doc_detail_actions",
     "doc_detail_badges", "category_schema", "on_company_created", "on_modules_ready",
-    "send_to_targets", "catalog_channel", "projection_handler",
+    "send_to_targets", "catalog_channel", "projection_handler", "pricing_action",
 }
 # How each table a module owns travels with a company backup.
 COMPANY_BACKUP_VALUES = {"include", "exclude"}
@@ -61,6 +62,11 @@ SEARCH_PROVIDER_KEYS = {"handler", "result_key", "permission"}
 # result_key names the list field the provider returns its rows under. The
 # aggregator reads exactly these two; any other value returns rows it never sees.
 SEARCH_PROVIDER_RESULT_KEYS = {"items", "entries"}
+# The pricing_action slot (Celerp 2.5.4+), kept in sync with
+# celerp/modules/loader.py _validate_pricing_action: the loader refuses the whole
+# module when an entry breaks one of these rules.
+PRICING_ACTION_PLACEHOLDERS = {"entity_id", "price_list", "field_name"}
+PRICING_ROW_TRAIT_PAIRS = (("editable", "readonly"), ("sell", "cost"), ("manual", "derived"))
 # min_celerp_version is optional, but when set it must be a dotted version so
 # the loader's comparison means something.
 MIN_VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
@@ -189,6 +195,38 @@ def _search_provider_problems(manifest: dict) -> list[str]:
     return problems
 
 
+def _pricing_action_problems(manifest: dict) -> list[str]:
+    """Every pricing_action entry the loader would refuse."""
+    entries = (manifest.get("slots") or {}).get("pricing_action")
+    if entries is None:
+        return []
+    traits = {trait for pair in PRICING_ROW_TRAIT_PAIRS for trait in pair}
+    problems = []
+    for index, item in enumerate(entries if isinstance(entries, list) else [entries]):
+        where = f"pricing_action entry {index}"
+        if not isinstance(item, dict):
+            problems.append(f"{where} must be a dict")
+            continue
+        href = item.get("href_template")
+        if not (isinstance(href, str) and href):
+            problems.append(f"{where} needs an href_template")
+        else:
+            for name in sorted(set(re.findall(r"\{([^{}]*)\}", href)) - PRICING_ACTION_PLACEHOLDERS):
+                problems.append(f"{where} href_template uses {{{name}}} - the placeholders are "
+                                + ", ".join(f"{{{p}}}" for p in sorted(PRICING_ACTION_PLACEHOLDERS)))
+        show_on = item.get("show_on", [])
+        if not isinstance(show_on, list) or not set(show_on) <= traits:
+            problems.append(f"{where} show_on must be a list of {sorted(traits)}")
+        else:
+            for pair in PRICING_ROW_TRAIT_PAIRS:
+                if set(pair) <= set(show_on):
+                    problems.append(f"{where} show_on lists both {pair[0]!r} and {pair[1]!r}, "
+                                    "so the action would never show")
+        if item.get("presentation", "page") != "page":
+            problems.append(f'{where} presentation must be "page"')
+    return problems
+
+
 def _str_rendered_fragments(py_file: Path) -> list[str]:
     """Lines that hand a fragment to str() instead of to_xml().
 
@@ -304,6 +342,7 @@ def lint(folder: Path) -> list[str]:
         problems.append("manifest declares no slots and no routes - the module does nothing")
     problems.extend(_manifest_key_problems(manifest))
     problems.extend(_search_provider_problems(manifest))
+    problems.extend(_pricing_action_problems(manifest))
     problems.extend(_company_backup_problems(manifest, folder))
 
     for py_file in folder.rglob("*.py"):
