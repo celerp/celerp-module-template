@@ -36,7 +36,7 @@ hand-rolled version would drift from the rest of the app the first time core cha
 **4. Gate reads and writes with a permission key, and use an existing one.**
 Permission keys are a closed registry (`celerp/services/permissions.py:54`), and
 the loader refuses a module whose slots name a key outside it
-(`celerp/modules/loader.py:889`), so a module cannot invent one today. Pick the
+(`celerp/modules/loader.py:890`), so a module cannot invent one today. Pick the
 key that matches what the page does. The API router depends on `require_permission`
 (`acme-maintenance/acme_maintenance/routes.py:54`) and the sidebar hides an entry
 whose `permission` the role does not have (`ui/components/shell.py:2228`); the page
@@ -48,7 +48,7 @@ hand-made request.
 not an error to the loader, it is ignored, so a misspelled gate ships wide open in
 silence. `min_role` is the classic: it looks like it gates the nav entry and it does
 nothing at all. There is no `icon` key either. The loader reads route modules by
-name (`celerp/modules/loader.py:851`), and `lint.py` holds the full list of accepted
+name (`celerp/modules/loader.py:853`), and `lint.py` holds the full list of accepted
 keys.
 
 The `search_provider` slot is the same discipline applied to a descriptor rather
@@ -107,7 +107,7 @@ user cannot load is not a list they should be told is empty.
 
 Module code must not import `celerp.session_gate`, `celerp.ai.*`, `celerp.gateway`,
 or `celerp.connectors`. Those are licensed internals, and the loader refuses to load
-a module that reaches into them (`celerp/modules/loader.py:56`) - not a warning, the
+a module that reaches into them (`celerp/modules/loader.py:58`) - not a warning, the
 module simply does not start. The public surface for AI features is
 `celerp.modules.api`. Everything else in `celerp.services` and `ui.components` is
 fair game, and this module uses both.
@@ -117,7 +117,7 @@ fair game, and this module uses both.
 Three of these rules are enforced, so a mistake surfaces before a restart rather
 than in front of a user:
 
-- Rule 1 and rule 5 are checked by `lint.py:230` and `lint.py:115`. Run
+- Rule 1 and rule 5 are checked by `lint.py:256` and `lint.py:119`. Run
   `python lint.py acme-maintenance` (or your renamed folder) before every restart.
 - Rule 2 is checked by a test that renders every view and fails on any class core
   neither styles nor emits: `acme-maintenance/tests/test_render.py:328`.

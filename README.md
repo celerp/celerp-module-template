@@ -192,16 +192,26 @@ example a page that suggests a price for one price list:
 item field holding that price; each is URL-encoded. `show_on` limits the link to
 rows with every listed trait (`editable`/`readonly`, `sell`/`cost`,
 `manual`/`derived`); leave it out for every row. The link opens your page, and
-that page's route must check `set_inventory_prices` itself. `python lint.py`
-reports an unknown placeholder or trait. The sample module does not use this
-slot, so it still installs on 2.0.0.
+that page's route must check `set_inventory_prices` itself.
+
+`href_template` must be a path inside Celerp: one leading `/`, never `//`, no
+backslash and no control character. Braces may only wrap one of the three
+placeholders, and the descriptor takes only `label`, `label_key`,
+`href_template`, `permission`, `show_on` and `presentation`. The loader refuses
+a module that breaks any of these, and `python lint.py` reports each one, along
+with an unknown trait. The sample module does not use this slot, so it still
+installs on 2.0.0.
 
 ## What to reach for next
 
 - Other slots (`bulk_action`, `item_action`, `doc_detail_actions`,
   `category_schema` and the rest), the manifest reference, the permission keys,
   and how to list or sell a module - see the
-  [module guide](https://www.celerp.com/docs/modules.html).
+  [module guide](https://www.celerp.com/docs/modules.html). `item_action`,
+  `doc_detail_actions` and `doc_detail_badges` show only while the module is
+  switched on and the role holds the contribution's `permission`. Filtered from
+  Celerp 2.5.4; older releases show it to everyone. Either way, the target page
+  must check permissions.
 - The public module API for AI features lives in `celerp.modules.api`. Which
   internals are off limits, and why, is in `AGENTS.md`; `lint.py` enforces it.
 

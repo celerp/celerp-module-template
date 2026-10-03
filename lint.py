@@ -10,7 +10,8 @@ problems in seconds instead of on a failed boot:
   - the manifest, its slot names and its nav slots use only names Celerp
     actually reads, so a misspelled or invented one is not silently ignored
     at load time
-  - pricing_action entries have the shape the loader accepts
+  - pricing_action entries have the shape the loader accepts: known keys only,
+    a link that stays inside Celerp, and braces only around a placeholder
   - no source file imports a protected celerp internal (revenue-gated; the
     loader rejects modules that do)
   - no fragment is rendered with str(); FT.__str__ returns the element id, so
@@ -46,6 +47,7 @@ SLOT_NAMES = {
     "nav", "search_provider", "bulk_action", "item_action", "doc_detail_actions",
     "doc_detail_badges", "category_schema", "on_company_created", "on_modules_ready",
     "send_to_targets", "catalog_channel", "projection_handler", "pricing_action",
+    "doc_finalize_hook", "on_doc_payment",
 }
 # How each table a module owns travels with a company backup.
 COMPANY_BACKUP_VALUES = {"include", "exclude"}
@@ -65,7 +67,9 @@ SEARCH_PROVIDER_RESULT_KEYS = {"items", "entries"}
 # The pricing_action slot (Celerp 2.5.4+), kept in sync with
 # celerp/modules/loader.py _validate_pricing_action: the loader refuses the whole
 # module when an entry breaks one of these rules.
+PRICING_ACTION_KEYS = {"label", "label_key", "href_template", "permission", "show_on", "presentation"}
 PRICING_ACTION_PLACEHOLDERS = {"entity_id", "price_list", "field_name"}
+PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
 PRICING_ROW_TRAIT_PAIRS = (("editable", "readonly"), ("sell", "cost"), ("manual", "derived"))
 # min_celerp_version is optional, but when set it must be a dotted version so
 # the loader's comparison means something.
@@ -195,6 +199,19 @@ def _search_provider_problems(manifest: dict) -> list[str]:
     return problems
 
 
+def _is_app_local_path(path) -> bool:
+    """Celerp's app-local rule (celerp/services/app_paths.py is_app_local_path),
+    copied because this script runs without Celerp installed: one leading /,
+    never //, no backslash, no ASCII control character."""
+    return (
+        isinstance(path, str)
+        and path.startswith("/")
+        and not path.startswith("//")
+        and "\\" not in path
+        and not any(ord(c) < 0x20 or ord(c) == 0x7F for c in path)
+    )
+
+
 def _pricing_action_problems(manifest: dict) -> list[str]:
     """Every pricing_action entry the loader would refuse."""
     entries = (manifest.get("slots") or {}).get("pricing_action")
@@ -207,13 +224,22 @@ def _pricing_action_problems(manifest: dict) -> list[str]:
         if not isinstance(item, dict):
             problems.append(f"{where} must be a dict")
             continue
+        for key in sorted(k for k in item if k not in PRICING_ACTION_KEYS):
+            problems.append(f"{where} has unknown key {key!r} - the keys are "
+                            + ", ".join(sorted(PRICING_ACTION_KEYS)))
         href = item.get("href_template")
         if not (isinstance(href, str) and href):
             problems.append(f"{where} needs an href_template")
+        elif not _is_app_local_path(href):
+            problems.append(f"{where} href_template must be a path inside Celerp: one leading /, "
+                            "never //, no backslash and no control character")
         else:
-            for name in sorted(set(re.findall(r"\{([^{}]*)\}", href)) - PRICING_ACTION_PLACEHOLDERS):
+            for name in sorted(set(PLACEHOLDER_RE.findall(href)) - PRICING_ACTION_PLACEHOLDERS):
                 problems.append(f"{where} href_template uses {{{name}}} - the placeholders are "
                                 + ", ".join(f"{{{p}}}" for p in sorted(PRICING_ACTION_PLACEHOLDERS)))
+            if set("{}") & set(PLACEHOLDER_RE.sub("", href)):
+                problems.append(f"{where} href_template has a stray brace - "
+                                "braces may only wrap a placeholder")
         show_on = item.get("show_on", [])
         if not isinstance(show_on, list) or not set(show_on) <= traits:
             problems.append(f"{where} show_on must be a list of {sorted(traits)}")

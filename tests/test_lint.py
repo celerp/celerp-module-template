@@ -201,6 +201,12 @@ class TestSlotNames(unittest.TestCase):
             self.assertTrue(any(repr(slot) in p and "slot" in p for p in problems),
                             f"slot {slot!r} is never read: {problems}")
 
+    def test_document_lifecycle_hooks_not_flagged(self):
+        # Celerp fires these from its documents module, so a module may fill them.
+        for slot in ("doc_finalize_hook", "on_doc_payment"):
+            folder = _module("acme-thing", extra=f'"slots": {{"{slot}": []}},')
+            self.assertEqual([p for p in lint.lint(folder) if "unknown slot" in p], [], slot)
+
     def test_consumed_slots_not_flagged(self):
         entries = ", ".join(f'"{slot}": []' for slot in sorted(lint.SLOT_NAMES))
         folder = _module("acme-thing", extra=f'"slots": {{{entries}}},')
@@ -324,6 +330,39 @@ class TestPricingActionSlot(unittest.TestCase):
                 problems = self._action(entry)
                 self.assertTrue(any(word in p for p in problems),
                                 f"{entry} not reported with {word!r}: {problems}")
+
+    def test_href_template_outside_celerp_flagged(self):
+        # Core puts the item id, list name and field name into this link, so it must
+        # stay inside Celerp: one leading /, never //, no backslash, no control
+        # character (Celerp's is_app_local_path, which the loader applies).
+        for href in ("https://evil.example/q/{entity_id}", "javascript:alert(1)",
+                     "//evil.example/q", "/\\evil.example/q", "/q/\x01", "/q/\x7f",
+                     "q/{entity_id}", "{entity_id}"):
+            with self.subTest(href=href):
+                problems = self._action(repr({"label": "Quote", "href_template": href}))
+                self.assertTrue(any("inside Celerp" in p for p in problems),
+                                f"{href!r} not reported: {problems}")
+
+    def test_stray_brace_flagged(self):
+        for href in ("/q/{entity_id", "/q/entity_id}", "/q/{entity_id}}", "/q/{{entity_id}}",
+                     "/q/{entity_id}?x={", "/q/{price_list{entity_id}"):
+            with self.subTest(href=href):
+                problems = self._action(repr({"label": "Quote", "href_template": href}))
+                self.assertTrue(any("brace" in p for p in problems),
+                                f"{href!r} not reported: {problems}")
+
+    def test_unknown_key_flagged(self):
+        for key in ("href", "show", "presentaton", "requires_connector"):
+            with self.subTest(key=key):
+                problems = self._action(repr({"label": "Quote", "href_template": "/q", key: "x"}))
+                self.assertTrue(any("unknown key" in p and repr(key) in p for p in problems),
+                                f"{key!r} not reported: {problems}")
+
+    def test_every_accepted_key_clean(self):
+        self.assertEqual(self._action(repr({
+            "label": "Quote", "label_key": "acme.quote", "permission": "set_inventory_prices",
+            "href_template": "/q/{entity_id}/{price_list}/{field_name}#top",
+            "show_on": ["sell"], "presentation": "page"})), [])
 
 
 def tearDownModule():
