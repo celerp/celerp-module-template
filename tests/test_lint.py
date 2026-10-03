@@ -302,6 +302,32 @@ class TestSearchProviderSlot(unittest.TestCase):
 
 
 
+class TestItemActionSlot(unittest.TestCase):
+    """item_action buttons link with the same rules as Pricing-row links: inside
+    Celerp, braces only around {entity_id}. The loader refuses the module otherwise."""
+
+    def _action(self, entry: str) -> list[str]:
+        folder = _module("acme-thing", extra=f'"slots": {{"item_action": [{entry}]}},')
+        return [p for p in lint.lint(folder) if "item_action" in p]
+
+    def test_well_formed_action_clean(self):
+        self.assertEqual(self._action(
+            '{"label": "Ship", "href_template": "/ship/{entity_id}?from=item", "icon": "x"}'), [])
+
+    def test_malformed_action_flagged(self):
+        for entry, word in (
+            ('{"label": "Ship"}', "needs an href_template"),
+            ('{"href_template": "https://evil.example/{entity_id}"}', "inside Celerp"),
+            ('{"href_template": "//evil.example/{entity_id}"}', "inside Celerp"),
+            ('{"href_template": "/ship/{entity_id"}', "stray brace"),
+            ('{"href_template": "/ship/{price_list}"}', "{price_list}"),
+            ('"Ship"', "dict"),
+        ):
+            with self.subTest(entry=entry):
+                problems = self._action(entry)
+                self.assertTrue(any(word in p for p in problems), f"{word!r} not in {problems}")
+
+
 class TestPricingActionSlot(unittest.TestCase):
     """The pricing_action slot puts a link on rows of an item's Pricing tab. The
     loader refuses a malformed entry, which stops the whole module loading, so

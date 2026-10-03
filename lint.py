@@ -12,6 +12,7 @@ problems in seconds instead of on a failed boot:
     at load time
   - pricing_action entries have the shape the loader accepts: known keys only,
     a link that stays inside Celerp, and braces only around a placeholder
+  - item_action links stay inside Celerp, with braces only around {entity_id}
   - no source file imports a protected celerp internal (revenue-gated; the
     loader rejects modules that do)
   - no fragment is rendered with str(); FT.__str__ returns the element id, so
@@ -70,6 +71,9 @@ SEARCH_PROVIDER_RESULT_KEYS = {"items", "entries"}
 PRICING_ACTION_KEYS = {"label", "label_key", "href_template", "permission", "show_on", "presentation"}
 PRICING_ACTION_PLACEHOLDERS = {"entity_id", "price_list", "field_name"}
 PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
+# item_action links follow the same link rules, with {entity_id} their only
+# placeholder (celerp/modules/loader.py _validate_item_action, Celerp 2.5.4+).
+ITEM_ACTION_PLACEHOLDERS = {"entity_id"}
 PRICING_ROW_TRAIT_PAIRS = (("editable", "readonly"), ("sell", "cost"), ("manual", "derived"))
 # min_celerp_version is optional, but when set it must be a dotted version so
 # the loader's comparison means something.
@@ -212,6 +216,40 @@ def _is_app_local_path(path) -> bool:
     )
 
 
+def _href_template_problems(where: str, item: dict, placeholders: set[str]) -> list[str]:
+    """The loader's link rules (loader.py _validate_href_template): an href_template
+    inside Celerp whose braces only wrap one of `placeholders`."""
+    href = item.get("href_template")
+    if not (isinstance(href, str) and href):
+        return [f"{where} needs an href_template"]
+    if not _is_app_local_path(href):
+        return [f"{where} href_template must be a path inside Celerp: one leading /, "
+                "never //, no backslash and no control character"]
+    problems = []
+    for name in sorted(set(PLACEHOLDER_RE.findall(href)) - placeholders):
+        problems.append(f"{where} href_template uses {{{name}}} - the placeholders are "
+                        + ", ".join(f"{{{p}}}" for p in sorted(placeholders)))
+    if set("{}") & set(PLACEHOLDER_RE.sub("", href)):
+        problems.append(f"{where} href_template has a stray brace - "
+                        "braces may only wrap a placeholder")
+    return problems
+
+
+def _item_action_problems(manifest: dict) -> list[str]:
+    """Every item_action entry the loader would refuse (loader.py _validate_item_action)."""
+    entries = (manifest.get("slots") or {}).get("item_action")
+    if entries is None:
+        return []
+    problems = []
+    for index, item in enumerate(entries if isinstance(entries, list) else [entries]):
+        where = f"item_action entry {index}"
+        if not isinstance(item, dict):
+            problems.append(f"{where} must be a dict")
+            continue
+        problems.extend(_href_template_problems(where, item, ITEM_ACTION_PLACEHOLDERS))
+    return problems
+
+
 def _pricing_action_problems(manifest: dict) -> list[str]:
     """Every pricing_action entry the loader would refuse."""
     entries = (manifest.get("slots") or {}).get("pricing_action")
@@ -227,19 +265,7 @@ def _pricing_action_problems(manifest: dict) -> list[str]:
         for key in sorted(k for k in item if k not in PRICING_ACTION_KEYS):
             problems.append(f"{where} has unknown key {key!r} - the keys are "
                             + ", ".join(sorted(PRICING_ACTION_KEYS)))
-        href = item.get("href_template")
-        if not (isinstance(href, str) and href):
-            problems.append(f"{where} needs an href_template")
-        elif not _is_app_local_path(href):
-            problems.append(f"{where} href_template must be a path inside Celerp: one leading /, "
-                            "never //, no backslash and no control character")
-        else:
-            for name in sorted(set(PLACEHOLDER_RE.findall(href)) - PRICING_ACTION_PLACEHOLDERS):
-                problems.append(f"{where} href_template uses {{{name}}} - the placeholders are "
-                                + ", ".join(f"{{{p}}}" for p in sorted(PRICING_ACTION_PLACEHOLDERS)))
-            if set("{}") & set(PLACEHOLDER_RE.sub("", href)):
-                problems.append(f"{where} href_template has a stray brace - "
-                                "braces may only wrap a placeholder")
+        problems.extend(_href_template_problems(where, item, PRICING_ACTION_PLACEHOLDERS))
         show_on = item.get("show_on", [])
         if not isinstance(show_on, list) or not set(show_on) <= traits:
             problems.append(f"{where} show_on must be a list of {sorted(traits)}")
@@ -368,6 +394,7 @@ def lint(folder: Path) -> list[str]:
         problems.append("manifest declares no slots and no routes - the module does nothing")
     problems.extend(_manifest_key_problems(manifest))
     problems.extend(_search_provider_problems(manifest))
+    problems.extend(_item_action_problems(manifest))
     problems.extend(_pricing_action_problems(manifest))
     problems.extend(_company_backup_problems(manifest, folder))
 

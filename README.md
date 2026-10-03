@@ -211,7 +211,9 @@ installs on 2.0.0.
   `doc_detail_actions` and `doc_detail_badges` show only while the module is
   switched on and the role holds the contribution's `permission`. Filtered from
   Celerp 2.5.4; older releases show it to everyone. Either way, the target page
-  must check permissions.
+  must check permissions. From 2.5.4 an `item_action` `href_template` follows
+  the Pricing-row link rules (inside Celerp, braces only around `{entity_id}`),
+  and `python lint.py` reports a link that breaks them.
 - The public module API for AI features lives in `celerp.modules.api`. Which
   internals are off limits, and why, is in `AGENTS.md`; `lint.py` enforces it.
 
