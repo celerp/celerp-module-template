@@ -25,9 +25,9 @@ compose `cell--{type}` at render time, so `cell--date` is core's even though no 
 file contains the string.
 
 **3. Use the shared components rather than a lookalike.** `page_header`
-(`ui/components/shell.py:2442`) puts search and actions in the header at the house
-size. `display_cell` (`ui/components/table.py:923`) and `editable_cell`
-(`ui/components/table.py:1145`) give you double-click-to-edit, ESC to cancel,
+(`ui/components/shell.py:2432`) puts search and actions in the header at the house
+size. `display_cell` (`ui/components/table.py:1145`) and `editable_cell`
+(`ui/components/table.py:923`) give you double-click-to-edit, ESC to cancel,
 save-on-blur, and `--` for an empty value, all pointed at your own routes through
 `patch_url` and `edit_url`. `files_section` (`ui/components/files.py:72`) renders
 the house files block against any `base_url`. Every one of these is a place where a
@@ -39,7 +39,7 @@ the loader refuses a module whose slots name a key outside it
 (`celerp/modules/loader.py:890`), so a module cannot invent one today. Pick the
 key that matches what the page does. The API router depends on `require_permission`
 (`acme-maintenance/acme_maintenance/routes.py:54`) and the sidebar hides an entry
-whose `permission` the role does not have (`ui/components/shell.py:2239`); the page
+whose `permission` the role does not have (`ui/components/shell.py:2228`); the page
 asks the same question so a viewer is never offered a control that would only fail.
 Hiding a control is presentation, never protection: the router is what stops a
 hand-made request.
