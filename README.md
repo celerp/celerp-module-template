@@ -209,9 +209,9 @@ installs on 2.0.0.
   and how to list or sell a module - see the
   [module guide](https://www.celerp.com/docs/modules.html). `item_action`,
   `doc_detail_actions` and `doc_detail_badges` show only while the module is
-  switched on and the role holds the contribution's `permission`. Filtered from
-  Celerp 2.5.4; older releases show it to everyone. Either way, the target page
-  must check permissions. From 2.5.4 an `item_action` `href_template` follows
+  switched on and the role holds the contribution's `permission`, from Celerp
+  2.5.4; older releases show them to everyone. Either way, the target page must
+  check permissions. From 2.5.4 an `item_action` `href_template` follows
   the Pricing-row link rules (inside Celerp, braces only around `{entity_id}`),
   and `python lint.py` reports a link that breaks them.
 - The public module API for AI features lives in `celerp.modules.api`. Which
