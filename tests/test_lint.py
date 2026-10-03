@@ -304,7 +304,8 @@ class TestSearchProviderSlot(unittest.TestCase):
 
 class TestItemActionSlot(unittest.TestCase):
     """item_action buttons link with the same rules as Pricing-row links: inside
-    Celerp, braces only around {entity_id}. The loader refuses the module otherwise."""
+    Celerp, braces only around {entity_id}. From Celerp 2.5.4 the loader refuses the
+    module otherwise; these tests need no Celerp, so they hold on any release."""
 
     def _action(self, entry: str) -> list[str]:
         folder = _module("acme-thing", extra=f'"slots": {{"item_action": [{entry}]}},')
@@ -330,7 +331,7 @@ class TestItemActionSlot(unittest.TestCase):
 
 class TestPricingActionSlot(unittest.TestCase):
     """The pricing_action slot puts a link on rows of an item's Pricing tab. The
-    loader refuses a malformed entry, which stops the whole module loading, so
+    2.5.4 loader refuses a malformed entry, which stops the whole module loading, so
     lint.py reports the same shapes first."""
 
     def _action(self, entry: str) -> list[str]:
@@ -360,7 +361,7 @@ class TestPricingActionSlot(unittest.TestCase):
     def test_href_template_outside_celerp_flagged(self):
         # Core puts the item id, list name and field name into this link, so it must
         # stay inside Celerp: one leading /, never //, no backslash, no control
-        # character (Celerp's is_app_local_path, which the loader applies).
+        # character (Celerp's is_app_local_path, which the 2.5.4 loader applies).
         for href in ("https://evil.example/q/{entity_id}", "javascript:alert(1)",
                      "//evil.example/q", "/\\evil.example/q", "/q/\x01", "/q/\x7f",
                      "q/{entity_id}", "{entity_id}"):
@@ -391,15 +392,6 @@ class TestPricingActionSlot(unittest.TestCase):
             "show_on": ["sell"], "presentation": "page"})), [])
 
 
-def tearDownModule():
-    for path in pathlib.Path(tempfile.gettempdir()).glob("tmp*"):
-        if (path / "acme-thing").exists() or (path / "renamed-maintenance").exists():
-            shutil.rmtree(path, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestCompanyBackup(unittest.TestCase):
     """Every table the module owns says whether it travels with a company backup."""
@@ -426,3 +418,113 @@ class TestCompanyBackup(unittest.TestCase):
     def test_table_outside_prefix_flagged(self):
         problems = self._problems(self._folder('"company_backup": {"acme_things": "include", "items": "include"},'))
         self.assertTrue(any("'items'" in p for p in problems), problems)
+
+
+class TestMalformedManifestValues(unittest.TestCase):
+    """A manifest is whatever literal the author wrote. lint.py names every shape it
+    cannot use as a problem and never stops on a traceback, because a traceback names
+    nothing."""
+
+    def _problems(self, extra: str = "", body: str | None = None) -> list[str]:
+        folder = _module("acme-thing", extra=extra, body=body)
+        (folder / "models.py").write_text('class Thing:\n    __tablename__ = "acme_things"\n',
+                                          encoding="utf-8")
+        return lint.lint(folder)
+
+    def _assert_reported(self, word: str, extra: str = "", body: str | None = None):
+        problems = self._problems(extra, body)
+        self.assertTrue(any(word in p for p in problems), f"{word!r} not in {problems}")
+
+    def test_show_on_member_that_is_not_a_trait_name(self):
+        for member in ("{}", "[]", '["sell"]', "1", "None", "1.5", "True"):
+            with self.subTest(member=member):
+                self._assert_reported("show_on", f'"slots": {{"pricing_action": '
+                                      f'[{{"href_template": "/q", "show_on": ["sell", {member}]}}]}},')
+
+    def test_show_on_that_is_not_a_list(self):
+        for value in ('"sell"', '{"sell": 1}', "1", "None", '("sell",)'):
+            with self.subTest(value=value):
+                self._assert_reported("show_on", f'"slots": {{"pricing_action": '
+                                      f'[{{"href_template": "/q", "show_on": {value}}}]}},')
+
+    def test_manifest_that_is_not_a_dict(self):
+        for value in ('["acme-thing"]', '"acme-thing"', "None", '{"name", "version"}'):
+            with self.subTest(value=value):
+                self._assert_reported("PLUGIN_MANIFEST must be a dict",
+                                      body=f"PLUGIN_MANIFEST = {value}\n")
+
+    def test_slots_that_is_not_a_dict(self):
+        for value in ('["nav"]', '"nav"', "1"):
+            with self.subTest(value=value):
+                self._assert_reported("slots must be a dict", f'"slots": {value},')
+
+    def test_keys_of_mixed_types(self):
+        # sorted() cannot order 1 against "x"; every unknown key is still named.
+        for extra, word in (
+            ('1: "x", (1, 2): "y",', "unknown key 1"),
+            ('"slots": {1: [], "nav": []},', "unknown slot 1"),
+            ('"slots": {"nav": [{"key": "t", "href": "/t", 1: "x", "icn": "y"}]},', "unknown key 1"),
+            ('"slots": {"search_provider": {"handler": "a:b", "result_key": "items", '
+             '"permission": "view_inventory", 1: "x", "extra": "y"}},', "unknown key 1"),
+            ('"slots": {"pricing_action": [{"href_template": "/q", 1: "x", "extra": "y"}]},',
+             "unknown key 1"),
+            ('"table_prefix": "acme_", "company_backup": {"acme_things": "include", 1: "include"},',
+             "names 1"),
+        ):
+            with self.subTest(extra=extra):
+                self._assert_reported(word, extra)
+
+    def test_search_provider_result_key_that_is_not_a_string(self):
+        for value in ('["items"]', '{"items": 1}', "None", "1"):
+            with self.subTest(value=value):
+                self._assert_reported("result_key", '"slots": {"search_provider": {"handler": "a:b", '
+                                      f'"permission": "view_inventory", "result_key": {value}}}}},')
+
+    def test_company_backup_value_that_is_not_a_string(self):
+        for value in ('["include"]', '{"include": 1}', "None", "1"):
+            with self.subTest(value=value):
+                self._assert_reported("company_backup says",
+                                      f'"table_prefix": "acme_", "company_backup": {{"acme_things": {value}}},')
+
+    def test_table_prefix_that_is_not_a_string(self):
+        for value in ('["acme_"]', "1", '{"acme_": 1}'):
+            with self.subTest(value=value):
+                self._assert_reported("table_prefix",
+                                      f'"table_prefix": {value}, "company_backup": {{"acme_things": "include"}},')
+
+    def test_no_value_in_any_key_lint_reads_stops_it(self):
+        # The crash class, swept: every key lint.py reads, holding each shape a literal
+        # can take. Each must come back as a list of problems, never a traceback.
+        shapes = ("{}", "[]", "[{}]", "[[]]", "[1, None]", "1", "1.5", "None", "True",
+                  '"x"', '{1: "x", "y": []}', '("x",)')
+        entry_keys = {
+            "nav": ("key", "href", "label", "permission"),
+            "search_provider": ("handler", "result_key", "permission"),
+            "item_action": ("href_template", "label"),
+            "pricing_action": ("href_template", "show_on", "presentation", "label"),
+        }
+        cases = [f'"{key}": {shape},' for key in sorted(lint.MANIFEST_KEYS - {"name"})
+                 for shape in shapes]
+        cases += [f'"slots": {{"{slot}": {shape}}},' for slot in sorted(lint.SLOT_NAMES)
+                  for shape in shapes]
+        cases += [f'"slots": {{"{slot}": [{{"href_template": "/q", "{key}": {shape}}}]}},'
+                  for slot, keys in entry_keys.items() for key in keys for shape in shapes]
+        cases += [f'"table_prefix": "acme_", "company_backup": {{"acme_things": {shape}}},'
+                  for shape in shapes]
+        for extra in cases:
+            with self.subTest(extra=extra):
+                self.assertIsInstance(self._problems(extra), list)
+        for shape in shapes:
+            with self.subTest(name=shape):
+                self.assertIsInstance(self._problems(body=MANIFEST.replace('"%s"', shape)
+                                                     % ("",)), list)
+
+
+def tearDownModule():
+    for path in pathlib.Path(tempfile.gettempdir()).glob("tmp*"):
+        if (path / "acme-thing").exists() or (path / "renamed-maintenance").exists():
+            shutil.rmtree(path, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

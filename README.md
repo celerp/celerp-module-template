@@ -197,9 +197,10 @@ that page's route must check `set_inventory_prices` itself.
 `href_template` must be a path inside Celerp: one leading `/`, never `//`, no
 backslash and no control character. Braces may only wrap one of the three
 placeholders, and the descriptor takes only `label`, `label_key`,
-`href_template`, `permission`, `show_on` and `presentation`. The loader refuses
-a module that breaks any of these, and `python lint.py` reports each one, along
-with an unknown trait. The sample module does not use this slot, so it still
+`href_template`, `permission`, `show_on` and `presentation`. From 2.5.4 the
+loader refuses a module that breaks any of these; 2.5.3 and earlier ignore the
+slot and show nothing. `python lint.py` reports each one, along with an unknown
+trait, whichever release you target. The sample module does not use this slot, so it still
 installs on 2.0.0.
 
 ## What to reach for next
