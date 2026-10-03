@@ -176,6 +176,36 @@ class TestManifestKeys(unittest.TestCase):
         folder = _module("acme-thing", extra='"min_celerp_version": "1.4.2",')
         self.assertEqual([p for p in lint.lint(folder) if "unknown" in p.lower()], [])
 
+    def test_locales_not_flagged(self):
+        """Celerp loads a module's locales folder, so the key is real."""
+        folder = _module("acme-thing", extra='"locales": "locales",')
+        self.assertEqual([p for p in lint.lint(folder) if "unknown" in p.lower()], [])
+
+    def test_unread_keys_flagged(self):
+        """requires, soft_depends and first_party are read by nothing in core."""
+        for key in ("requires", "soft_depends", "first_party"):
+            folder = _module("acme-thing", extra=f'"{key}": [],')
+            problems = lint.lint(folder)
+            self.assertTrue(any(repr(key) in p for p in problems),
+                            f"{key!r} does nothing at load time: {problems}")
+
+
+class TestSlotNames(unittest.TestCase):
+    """Core ignores a slot it does not consume, so a misspelled slot name ships a
+    module whose entry never appears, with nothing logged."""
+
+    def test_unknown_slot_flagged(self):
+        for slot in ("nav_items", "settings_tab"):
+            folder = _module("acme-thing", extra=f'"slots": {{"{slot}": []}},')
+            problems = lint.lint(folder)
+            self.assertTrue(any(repr(slot) in p and "slot" in p for p in problems),
+                            f"slot {slot!r} is never read: {problems}")
+
+    def test_consumed_slots_not_flagged(self):
+        entries = ", ".join(f'"{slot}": []' for slot in sorted(lint.SLOT_NAMES))
+        folder = _module("acme-thing", extra=f'"slots": {{{entries}}},')
+        self.assertEqual([p for p in lint.lint(folder) if "unknown slot" in p], [])
+
 
 class TestSearchProviderSlot(unittest.TestCase):
     """The search_provider slot descriptor: exactly one dict (never a list),

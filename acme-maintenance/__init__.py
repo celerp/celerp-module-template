@@ -98,8 +98,8 @@ PLUGIN_MANIFEST = {
         "acme_equipment_file": "include",
     },
 
-    # ── depends_on / requires ─────────────────────────────────────────────────
+    # ── depends_on ────────────────────────────────────────────────────────────
     # This template needs nothing. If your module depends on another module,
-    # list its name in "depends_on". If it needs pip packages, add a
-    # requirements.txt beside this file and list them in "requires" (advisory).
+    # list its name in "depends_on". Celerp never installs Python packages for
+    # a module, so use only what Celerp itself ships.
 }

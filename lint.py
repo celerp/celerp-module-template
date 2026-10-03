@@ -7,8 +7,9 @@ problems in seconds instead of on a failed boot:
   - the folder has an __init__.py with a PLUGIN_MANIFEST
   - the manifest has the required identity fields and at least one slot/route
   - the module name is not in the reserved `celerp-` namespace
-  - the manifest and its nav slots use only keys Celerp actually reads, so a
-    misspelled or invented key is not silently ignored at load time
+  - the manifest, its slot names and its nav slots use only names Celerp
+    actually reads, so a misspelled or invented one is not silently ignored
+    at load time
   - no source file imports a protected celerp internal (revenue-gated; the
     loader rejects modules that do)
   - no fragment is rendered with str(); FT.__str__ returns the element id, so
@@ -36,7 +37,14 @@ REQUIRED_FIELDS = ("name", "version", "display_name", "license")
 MANIFEST_KEYS = {
     "name", "version", "display_name", "label", "description", "license", "author",
     "min_celerp_version", "api_routes", "ui_routes", "slots", "migrations",
-    "table_prefix", "company_backup", "depends_on", "soft_depends", "requires", "first_party",
+    "table_prefix", "company_backup", "depends_on", "locales",
+}
+# Every slot core consumes. A slot core does not read is ignored at load time,
+# so a misspelled slot name ships an entry that never appears.
+SLOT_NAMES = {
+    "nav", "search_provider", "bulk_action", "item_action", "doc_detail_actions",
+    "doc_detail_badges", "category_schema", "on_company_created", "on_modules_ready",
+    "send_to_targets", "catalog_channel", "projection_handler",
 }
 # How each table a module owns travels with a company backup.
 COMPANY_BACKUP_VALUES = {"include", "exclude"}
@@ -104,6 +112,11 @@ def _manifest_key_problems(manifest: dict) -> list[str]:
     for key in sorted(k for k in manifest if k not in MANIFEST_KEYS):
         problems.append(f"manifest has unknown key {key!r} - Celerp reads none of it, "
                         f"so it does nothing at load time")
+    slots = manifest.get("slots")
+    for slot in sorted(slots if isinstance(slots, dict) else ()):
+        if slot not in SLOT_NAMES:
+            problems.append(f"manifest has unknown slot {slot!r} - Celerp reads none of it, "
+                            f"so it does nothing at load time")
     for index, item in enumerate(_nav_items(manifest)):
         for key in sorted(k for k in item if k not in NAV_ITEM_KEYS):
             hint = (" - core hides a nav entry by the role's \"permission\", so this "

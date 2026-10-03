@@ -36,7 +36,7 @@ acme-maintenance/               the module (copy and rename this whole folder)
     routes.py                   API: list / create / edit-field / mark-serviced /
                                 archive / restore / service log / files
     ui_routes.py                the /maintenance list, detail and calendar pages
-    migrations/                 Alembic migrations on the module's own branch
+    migrations/                 schema changes Celerp runs at every start
   tests/                        the module's suite: real database, real API app
     conftest.py                 the harness to copy into your own module
     test_api.py                 permissions, validation, and failure paths
@@ -128,8 +128,9 @@ listing, so a user reading either one sees the same answer.
   [community-modules](https://github.com/celerp/community-modules) adding one
   catalog entry. Its README has the full bar a listing must meet.
 - **Sell it**: paid modules go through Celerp's marketplace rather than the
-  community directory. The "Sell your module" section of the community-modules
-  README walks through it.
+  community directory. Sign in at [celerp.com/authors](https://www.celerp.com/authors/)
+  to publish one. The [module guide](https://www.celerp.com/docs/modules.html#share)
+  covers both routes.
 
 ## The search_provider slot
 
@@ -172,8 +173,10 @@ two, or a handler that is not a single `module:function` string.
 
 ## What to reach for next
 
-- More sidebar behavior and other slots (`bulk_action`, `item_action`,
-  `settings_tab`) - see the guide.
+- Other slots (`bulk_action`, `item_action`, `doc_detail_actions`,
+  `category_schema` and the rest), the manifest reference, the permission keys,
+  and how to list or sell a module - see the
+  [module guide](https://www.celerp.com/docs/modules.html).
 - The public module API for AI features lives in `celerp.modules.api`. Which
   internals are off limits, and why, is in `AGENTS.md`; `lint.py` enforces it.
 

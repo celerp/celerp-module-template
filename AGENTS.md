@@ -15,7 +15,7 @@ questions that come up next.
 element's `id`, so `HTMLResponse(str(Div(..., id="rows")))` sends the browser the
 five characters `rows`. Nothing raises and nothing is logged; the page region just
 goes blank or fills with a word. Core renders fragments through `to_xml` everywhere,
-and so does this module: `acme-maintenance/acme_maintenance/ui_routes.py:550`.
+and so does this module: `acme-maintenance/acme_maintenance/ui_routes.py:544`.
 
 **2. A module ships no CSS, so use classes that already exist.** There is no hook
 for a module stylesheet. A class core has never heard of renders unstyled, which is
@@ -25,21 +25,21 @@ compose `cell--{type}` at render time, so `cell--date` is core's even though no 
 file contains the string.
 
 **3. Use the shared components rather than a lookalike.** `page_header`
-(`ui/components/shell.py:1599`) puts search and actions in the header at the house
-size. `display_cell` (`ui/components/table.py:1059`) and `editable_cell`
-(`ui/components/table.py:851`) give you double-click-to-edit, ESC to cancel,
+(`ui/components/shell.py:2432`) puts search and actions in the header at the house
+size. `display_cell` (`ui/components/table.py:1145`) and `editable_cell`
+(`ui/components/table.py:923`) give you double-click-to-edit, ESC to cancel,
 save-on-blur, and `--` for an empty value, all pointed at your own routes through
 `patch_url` and `edit_url`. `files_section` (`ui/components/files.py:72`) renders
 the house files block against any `base_url`. Every one of these is a place where a
 hand-rolled version would drift from the rest of the app the first time core changes.
 
 **4. Gate reads and writes with a permission key, and use an existing one.**
-Permission keys are a closed registry (`celerp/services/permissions.py:46`), and
+Permission keys are a closed registry (`celerp/services/permissions.py:54`), and
 the loader refuses a module whose slots name a key outside it
-(`celerp/modules/loader.py:763`), so a module cannot invent one today. Pick the
+(`celerp/modules/loader.py:889`), so a module cannot invent one today. Pick the
 key that matches what the page does. The API router depends on `require_permission`
 (`acme-maintenance/acme_maintenance/routes.py:54`) and the sidebar hides an entry
-whose `permission` the role does not have (`ui/components/shell.py:1405`); the page
+whose `permission` the role does not have (`ui/components/shell.py:2228`); the page
 asks the same question so a viewer is never offered a control that would only fail.
 Hiding a control is presentation, never protection: the router is what stops a
 hand-made request.
@@ -48,7 +48,7 @@ hand-made request.
 not an error to the loader, it is ignored, so a misspelled gate ships wide open in
 silence. `min_role` is the classic: it looks like it gates the nav entry and it does
 nothing at all. There is no `icon` key either. The loader reads route modules by
-name (`celerp/modules/loader.py:730`), and `lint.py` holds the full list of accepted
+name (`celerp/modules/loader.py:851`), and `lint.py` holds the full list of accepted
 keys.
 
 The `search_provider` slot is the same discipline applied to a descriptor rather
@@ -78,13 +78,16 @@ ask". `lint.py` flags a descriptor given as a list instead of one dict, missing 
 key, carrying an unknown one, naming a `result_key` outside the two the
 aggregator reads, or a handler that is not a single `module:function` string.
 
-**6. Your tables come from your models, not from your migrations.** Module models
-register on Celerp's shared metadata when the loader imports them, and Celerp runs
-`create_all` after loading modules (`celerp/main.py:195`), so a new table appears on
-the next launch. Nothing runs a module's Alembic directory today, so a migration
-that changes a table you have already shipped is yours to apply against the live
-database before the new code reaches it. Write it anyway: `create_all` cannot alter
-an existing table.
+**6. New tables come from your models; changes to shipped tables come from
+migrations.** Module models register on Celerp's shared metadata when the loader
+imports them, and Celerp runs `create_all` after loading modules
+(`celerp/main.py:245`), so a new table appears on the next launch. `create_all`
+cannot alter an existing table, so any change to a table you have shipped is a
+migration. Celerp runs every file in the manifest's `migrations` package at each
+start, in filename order, before the module loads
+(`celerp/modules/migrations_runner.py:179`). It keeps no version record, so each
+step checks before it acts and is safe to run again, and every table a migration
+touches must start with the manifest's `table_prefix`.
 
 **7. Filters and view state live in the URL.** Search text, status, and which view
 is showing all belong in the query string, so Back works, a bookmark works, and a
@@ -96,7 +99,7 @@ rather than serving a bare fragment as a document.
 renders an empty list, because "nothing here" and "we could not ask" are different
 facts and the user acts differently on each. A rejected edit comes back as the
 editor with the value still in it, marked `cell--error` and carrying the reason in
-its `title`, which is how core marks one (`ui/routes/inventory.py:2050`); a
+its `title`, which is how core marks one (`ui/routes/inventory.py:2456`); a
 toast on its own vanishes and leaves the refused value looking accepted. A list a
 user cannot load is not a list they should be told is empty.
 
@@ -104,7 +107,7 @@ user cannot load is not a list they should be told is empty.
 
 Module code must not import `celerp.session_gate`, `celerp.ai.*`, `celerp.gateway`,
 or `celerp.connectors`. Those are licensed internals, and the loader refuses to load
-a module that reaches into them (`celerp/modules/loader.py:54`) - not a warning, the
+a module that reaches into them (`celerp/modules/loader.py:56`) - not a warning, the
 module simply does not start. The public surface for AI features is
 `celerp.modules.api`. Everything else in `celerp.services` and `ui.components` is
 fair game, and this module uses both.
@@ -114,10 +117,10 @@ fair game, and this module uses both.
 Three of these rules are enforced, so a mistake surfaces before a restart rather
 than in front of a user:
 
-- Rule 1 and rule 5 are checked by `lint.py:115` and `lint.py:91`. Run
+- Rule 1 and rule 5 are checked by `lint.py:192` and `lint.py:109`. Run
   `python lint.py acme-maintenance` (or your renamed folder) before every restart.
 - Rule 2 is checked by a test that renders every view and fails on any class core
-  neither styles nor emits: `acme-maintenance/tests/test_render.py:230`.
+  neither styles nor emits: `acme-maintenance/tests/test_render.py:328`.
 - The protected-import rule above is checked by `lint.py` as well, so you find out
   before a restart rather than from a module that will not load.
 - The citations in this file are checked too, so guidance that has drifted from the
