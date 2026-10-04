@@ -85,7 +85,9 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    request one decision instead of two.
 4. Rename the tables in `models.py` and the migrations, prefixed with your name,
    and set the manifest's `table_prefix` to that prefix (at least 3 characters,
-   ending in `_`, such as `"acme_"`).
+   ending in `_`, such as `"acme_"`). From Celerp 2.5.4 a `table_prefix` that
+   is present must follow these rules even without migrations, so leave the key
+   out rather than setting it to `None` if the module has no tables.
    List each one in the manifest's `company_backup` as `"include"` (the company's
    records, carried by a company backup) or `"exclude"` (this installation's state,
    such as stored credentials). Celerp refuses to back up a company while one of
@@ -199,11 +201,11 @@ that page's route must check `set_inventory_prices` itself.
 
 `href_template` must be a path inside Celerp: one leading `/`, never `//`, no
 backslash and no control character. Braces may only wrap one of the three
-placeholders, and the descriptor takes only `label`, `label_key`,
-`href_template`, `permission`, `show_on` and `presentation`. From 2.5.4 the
-loader refuses a module that breaks any of these; 2.5.3 and earlier ignore the
-slot and show nothing. `python lint.py` reports each one, along with an unknown
-trait, whichever release you target. The sample module does not use this slot, so it still
+placeholders, the descriptor takes only `label`, `label_key`,
+`href_template`, `permission`, `show_on` and `presentation`, and `show_on` holds
+only the six traits, never both of one pair. From 2.5.4 the loader refuses a
+module that breaks any of these; 2.5.3 and earlier ignore the slot and show
+nothing. `python lint.py` reports each one, whichever release you target. The sample module does not use this slot, so it still
 installs on 2.0.0.
 
 ## What to reach for next
