@@ -69,9 +69,13 @@ def test_due_logic_and_status():
 
 
 def test_agents_md_citations_resolve():
-    """A47: the guidance an author is told to trust points at lines that exist."""
+    """A47: the guidance an author is told to trust points at code, not at a blank
+    line or a comment. Celerp paths cite 2.5.4 lines, so they are checked only
+    against a Celerp checkout that has 2.5.4's module checks."""
     import ui
+    from celerp.modules import importer
     core_root = Path(ui.__file__).resolve().parents[1]
+    core_is_254 = hasattr(importer, "table_prefix_problem")
     agents = REPO_ROOT / "AGENTS.md"
     assert agents.exists(), "the repo ships no AGENTS.md for the next author to read"
 
@@ -84,9 +88,15 @@ def test_agents_md_citations_resolve():
         for root in (REPO_ROOT, core_root):
             path = root / rel
             if path.is_file():
-                if len(path.read_text(errors="ignore").splitlines()) < int(line_no):
+                if root == core_root and not core_is_254:
+                    break
+                lines = path.read_text(errors="ignore").splitlines()
+                if len(lines) < int(line_no):
                     broken.append(f"{rel}:{line_no} (file has fewer lines)")
+                elif not (code := lines[int(line_no) - 1].strip()) or code.startswith("#"):
+                    broken.append(f"{rel}:{line_no} (not a line of code: {code!r})")
                 break
         else:
-            broken.append(f"{rel}:{line_no} (no such file)")
+            if core_is_254 or not rel.startswith(("celerp/", "ui/")):
+                broken.append(f"{rel}:{line_no} (no such file)")
     assert broken == [], f"AGENTS.md citations that do not resolve: {broken}"
