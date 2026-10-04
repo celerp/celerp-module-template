@@ -43,8 +43,9 @@ REQUIRED_FIELDS = ("name", "version", "display_name", "license")
 # it as (celerp/modules/loader.py, importer.py, migrations_runner.py). Any other
 # type breaks in core rather than being refused: a depends_on string is iterated
 # letter by letter, a migrations number has no .split(). None is the same as
-# leaving the field out, which is how Celerp reads it. depends_on is a list of
-# strings.
+# leaving the field out, which is how Celerp reads it, except for table_prefix:
+# Celerp checks a declared table_prefix whatever its value. depends_on is a list
+# of strings.
 MANIFEST_FIELD_TYPES = {
     **dict.fromkeys(("name", "version", "display_name", "label", "description", "license",
                      "author", "min_celerp_version", "api_routes", "ui_routes", "migrations",
@@ -414,12 +415,15 @@ def _table_prefix_problems(manifest: dict) -> list[str]:
     """The table_prefix rules that need nothing but the manifest. Celerp also refuses a
     prefix that a core table or another installed module's prefix starts with, which
     only the installation it lands on can tell."""
-    prefix = manifest.get("table_prefix")
-    if prefix is None:
+    if "table_prefix" not in manifest:
         if manifest.get("migrations"):
             return ["migrations needs a table_prefix naming the tables the module owns, "
                     "such as 'acme_' - Celerp refuses a module with migrations and no prefix"]
         return []
+    prefix = manifest["table_prefix"]
+    if prefix is None:
+        return ["table_prefix is None; set it to the prefix of the tables the module owns, "
+                "such as 'acme_', or leave it out"]
     if len(prefix) < MIN_TABLE_PREFIX_LEN or not prefix.endswith("_"):
         return [f"table_prefix {prefix!r} must be at least {MIN_TABLE_PREFIX_LEN} characters "
                 "and end with an underscore, such as 'acme_'"]
@@ -444,7 +448,8 @@ def lint(folder: Path) -> list[str]:
              if (problem := _type_problem(field, value))}
     problems.extend(wrong.values())
     manifest = {field: value for field, value in manifest.items()
-                if field not in wrong and not (value is None and field in MANIFEST_KEYS)}
+                if field not in wrong
+                and not (value is None and field in MANIFEST_KEYS - {"table_prefix"})}
 
     for field in REQUIRED_FIELDS:
         if field not in wrong and not manifest.get(field):

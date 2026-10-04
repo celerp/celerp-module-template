@@ -578,8 +578,8 @@ class TestManifestFieldTypes(unittest.TestCase):
             table_prefix="acme_", company_backup={}), [])
 
     def test_none_is_an_absent_optional_field(self):
-        # Celerp reads None the same as a missing key.
-        for field in sorted(lint.MANIFEST_KEYS - set(lint.REQUIRED_FIELDS)):
+        # Celerp reads None the same as a missing key, except for table_prefix.
+        for field in sorted(lint.MANIFEST_KEYS - set(lint.REQUIRED_FIELDS) - {"table_prefix"}):
             with self.subTest(field=field):
                 self.assertEqual(self._problems(**{field: None}), [])
 
@@ -600,6 +600,14 @@ class TestTablePrefixShape(unittest.TestCase):
             for migrations in ("", '"migrations": "thing.migrations",'):
                 with self.subTest(prefix=prefix, migrations=migrations):
                     self.assertTrue(self._problems(f'"table_prefix": {prefix!r}, {migrations}'))
+
+    def test_declared_none_prefix_flagged(self):
+        # Celerp refuses a table_prefix key whose value is not a prefix, None included.
+        for migrations in ("", '"migrations": "thing.migrations",'):
+            with self.subTest(migrations=migrations):
+                self.assertEqual(self._problems(f'"table_prefix": None, {migrations}'),
+                                 ["table_prefix is None; set it to the prefix of the tables the "
+                                  "module owns, such as 'acme_', or leave it out"])
 
     def test_migrations_without_prefix_flagged(self):
         problems = self._problems('"migrations": "thing.migrations",')

@@ -7,6 +7,11 @@ without Celerp installed. This test runs where Celerp is importable and holds
 the copy to the original: every manifest below must be accepted by both or
 refused by both. Celerp 2.5.3 and earlier do not have these checks, so against
 them the test is skipped.
+
+table_prefix is compared only on the rules that need nothing but the manifest.
+Celerp also refuses a prefix that one of its own tables or another installed
+module's prefix starts with; the prefixes below start with none, and no other
+module is installed.
 """
 from __future__ import annotations
 
@@ -14,7 +19,9 @@ import importlib.util
 import itertools
 import os
 import pathlib
+import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("celerp_module_lint", ROOT / "lint.py")
@@ -27,6 +34,7 @@ except ImportError:
     importer = loader = None
 
 SLOT_VALIDATORS = getattr(loader, "_LINK_SLOT_VALIDATORS", None)
+PREFIX_PROBLEM = getattr(importer, "table_prefix_problem", None)
 
 # Every shape a literal can take, as in test_lint's crash sweep.
 SHAPES = ({}, [], [{}], [[]], [1, None], 1, 1.5, None, True, "x", {1: "x", "y": []}, ("x",))
@@ -108,6 +116,69 @@ class TestLinkSlotParity(unittest.TestCase):
         self.assertEqual(lint.PRICING_ROW_TRAIT_PAIRS, loader._PRICING_ROW_TRAIT_PAIRS)
         self.assertEqual(lint.PLACEHOLDER_RE.pattern, loader._PLACEHOLDER_RE.pattern)
         self.assertEqual(lint.PROTECTED, set(loader._PROTECTED_BSL_INTERNALS))
+
+
+PREFIXES = (
+    "acme_", "acme_x_", "abc_", "acme__", "ACME_", "zq9_", "___", "acmé_",
+    "", "_", "__", "a_", "ab", "abc", "acme", "acme-", "acme_ ", " acme",
+    None, 1, 1.5, True, ["acme_"], {"acme_": 1}, ("acme_",),
+)
+ABSENT = object()
+MIGRATIONS = (ABSENT, "thing.migrations", "", None)
+MANIFEST = """PLUGIN_MANIFEST = {
+    "name": "acme-thing", "version": "0.1.0", "display_name": "Thing", "license": "MIT",
+    "ui_routes": "thing.ui_routes",
+    %s
+}
+"""
+
+
+def _prefix_manifests() -> list[dict]:
+    manifests = []
+    for prefix, migrations in itertools.product((ABSENT,) + PREFIXES, MIGRATIONS):
+        manifest = {}
+        if prefix is not ABSENT:
+            manifest["table_prefix"] = prefix
+        if migrations is not ABSENT:
+            manifest["migrations"] = migrations
+        manifests.append(manifest)
+    return manifests
+
+
+@unittest.skipIf(PREFIX_PROBLEM is None, "needs Celerp 2.5.4 or later importable")
+class TestTablePrefixParity(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _lint_refuses(self, manifest: dict) -> bool:
+        folder = pathlib.Path(tempfile.mkdtemp(dir=self.tmp.name)) / "acme-thing"
+        folder.mkdir()
+        extra = "".join(f"{key!r}: {value!r}, " for key, value in manifest.items())
+        (folder / "__init__.py").write_text(MANIFEST % extra, encoding="utf-8")
+        return bool(lint.lint(folder))
+
+    def _core_refuses(self, manifest: dict) -> bool:
+        empty = pathlib.Path(self.tmp.name) / "modules"
+        empty.mkdir(exist_ok=True)
+        with mock.patch.dict(os.environ, {"MODULE_DIR": str(empty)}):
+            try:
+                importer._validate_table_prefix("acme-thing", manifest)
+            except importer.ModuleImportError:
+                return True
+        return False
+
+    def test_lint_and_celerp_agree_on_every_prefix(self):
+        manifests = _prefix_manifests()
+        disagree = [(m, self._lint_refuses(m), self._core_refuses(m)) for m in manifests
+                    if self._lint_refuses(m) != self._core_refuses(m)]
+        self.assertEqual(disagree, [], f"{len(disagree)} of {len(manifests)} "
+                         "(manifest, lint refuses, celerp refuses)")
+        refused = sum(self._core_refuses(m) for m in manifests)
+        self.assertTrue(0 < refused < len(manifests))
+
+    def test_shared_constants_match(self):
+        self.assertEqual(lint.MIN_TABLE_PREFIX_LEN, importer.MIN_TABLE_PREFIX_LEN)
 
 
 if __name__ == "__main__":
