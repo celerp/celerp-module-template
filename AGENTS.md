@@ -35,8 +35,9 @@ hand-rolled version would drift from the rest of the app the first time core cha
 
 **4. Gate reads and writes with a permission key, and use an existing one.**
 Permission keys are a closed registry (`celerp/services/permissions.py:54`), and
-the loader refuses a module whose slots name a key outside it
-(`celerp/modules/loader.py:892`), so a module cannot invent one today. Pick the
+the loader refuses a module whose slot entries name a key outside it, in either
+`permission` or `write_permission` (`celerp/modules/loader.py:1392`), so a module
+cannot invent one today. Pick the
 key that matches what the page does. The API router depends on `require_permission`
 (`acme-maintenance/acme_maintenance/routes.py:54`) and the sidebar hides an entry
 whose `permission` the role does not have (`ui/components/shell.py:2238`); the page
@@ -48,8 +49,10 @@ hand-made request.
 not an error to the loader, it is ignored, so a misspelled gate ships wide open in
 silence. `min_role` is the classic: it looks like it gates the nav entry and it does
 nothing at all. There is no `icon` key either. The loader reads route modules by
-name (`celerp/modules/loader.py:855`), and `lint.py` holds the full list of accepted
-keys.
+name (`celerp/modules/loader.py:1009`), and `lint.py` holds the full list of accepted
+keys. Every top-level manifest field must also hold the one type Celerp reads it as.
+`lint.py` reports an ignored key or slot as its own kind of finding, separate from
+a problem the loader refuses, and exits 1 on either.
 
 The `search_provider` slot is the same discipline applied to a descriptor rather
 than a manifest. It contributes a read-only, company-scoped, permission-gated
@@ -60,9 +63,8 @@ and returns its own matches. Unlike `nav`, this slot is a single descriptor, not
 a list: a module contributes exactly one search provider, and the core loader
 reads one dict. It carries exactly three keys, all required. `handler` is a
 dotted `module:function` string (here `acme_maintenance.search:global_search`)
-for an async function returning `{result_key: [rows]}`: exactly one module path,
-one `:`, one function name, and the loader resolves it to source inside this
-module's own package, never core or another module. `result_key` is the list
+for an async function returning `{result_key: [rows]}`, held to the same rules as
+every other slot callable (below). `result_key` is the list
 field those rows come back under and must be `"items"` or `"entries"`; any other
 value returns rows the aggregator never reads. `permission` is a real Celerp
 permission key from the same closed registry as rule 4, never left off, because a
@@ -76,12 +78,31 @@ marks only your provider degraded and still returns the others' results.
 Swallowing the error into an empty list reports "nothing here" for "we could not
 ask". `lint.py` flags a descriptor given as a list instead of one dict, missing a
 key, carrying an unknown one, naming a `result_key` outside the two the
-aggregator reads, or a handler that is not a single `module:function` string.
+aggregator reads, or a handler the loader would refuse.
+
+Every slot entry, in any slot, follows the same rules from Celerp 2.5.4
+(`celerp/modules/loader.py:1376`), and any module may fill any slot. Each entry is a
+dict. `permission` and `write_permission` name registry keys (rule 4).
+`requires_connector`, when set, is a connector id string. A destination Celerp
+links to (`nav` `href` and `settings_href`, `bulk_action` `form_action`, which is
+required, and `item_action` `href_template`) is a path inside Celerp: one leading
+`/`, never `//`, no backslash and no control character
+(`celerp/services/app_paths.py:12`). A `projection_handler` `prefix` is a non-empty
+string. A slot that names code to run (its `handler`, or `render` for the
+`doc_detail_*` slots) gives one `module:function` that resolves to a callable in
+this module's own files, async exactly where Celerp awaits it (`celerp/modules/loader.py:1453`).
+
+The tables a module creates must start with its `table_prefix`: at least 3
+characters, ending in `_`, and no table Celerp keeps for itself may start with it,
+so `label_`, `marketplace_` and `bank_` are taken (`celerp/modules/importer.py:203`). Two installed
+modules' prefixes may not overlap either: neither prefix may be a prefix of the
+other (`celerp/modules/importer.py:277`). Only the installation knows the other
+modules, so `lint.py` checks every rule here except that last one.
 
 **6. New tables come from your models; changes to shipped tables come from
 migrations.** Module models register on Celerp's shared metadata when the loader
 imports them, and Celerp runs `create_all` after loading modules
-(`celerp/main.py:294`), so a new table appears on the next launch. `create_all`
+(`celerp/main.py:298`), so a new table appears on the next launch. `create_all`
 cannot alter an existing table, so any change to a table you have shipped is a
 migration. Celerp runs every file in the manifest's `migrations` package at each
 start, in filename order, before the module loads
@@ -107,7 +128,7 @@ user cannot load is not a list they should be told is empty.
 
 Module code must not import `celerp.session_gate`, `celerp.ai.*`, `celerp.gateway`,
 or `celerp.connectors`. Those are licensed internals, and the loader refuses to load
-a module that reaches into them (`celerp/modules/loader.py:60`) - not a warning, the
+a module that reaches into them (`celerp/modules/loader.py:58`) - not a warning, the
 module simply does not start. The public surface for AI features is
 `celerp.modules.api`. Everything else in `celerp.services` and `ui.components` is
 fair game, and this module uses both.
@@ -117,12 +138,15 @@ fair game, and this module uses both.
 Three of these rules are enforced, so a mistake surfaces before a restart rather
 than in front of a user:
 
-- Rule 1 and rule 5 are checked by `lint.py:335` and `lint.py:174`. Run
+- Rule 1 and rule 5 are checked by `lint.py:539` and `lint.py:239`, and the slot
+  and table rules above by `lint.py:390` and `lint.py:618`. `tests/test_core_parity.py`
+  loads each case through Celerp's own loader and fails wherever lint and the loader
+  disagree. Run
   `python lint.py acme-maintenance` (or your renamed folder) before every restart.
 - Rule 2 is checked by a test that renders every view and fails on any class core
   neither styles nor emits: `acme-maintenance/tests/test_render.py:328`.
-- The protected-import rule above is checked by `lint.py` as well, so you find out
-  before a restart rather than from a module that will not load.
+- The protected-import rule above is checked by `lint.py` as well (`lint.py:192`),
+  so you find out before a restart rather than from a module that will not load.
 - The citations in this file are checked too, so guidance that has drifted from the
   code fails a test instead of quietly misleading the next reader.
 
