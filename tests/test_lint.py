@@ -32,10 +32,16 @@ MANIFEST = '''PLUGIN_MANIFEST = {
 '''
 
 
+# The temp folders this process made, removed when the module finishes. Only these:
+# test workers running in parallel share one temp directory.
+_TEMP_DIRS: list[pathlib.Path] = []
+
+
 def _module(folder_name: str, manifest_name: str | None = None,
             extra: str = "", body: str | None = None) -> pathlib.Path:
     """A throwaway module folder with the given manifest."""
     tmp = pathlib.Path(tempfile.mkdtemp())
+    _TEMP_DIRS.append(tmp)
     folder = tmp / folder_name
     folder.mkdir()
     text = body if body is not None else MANIFEST % (manifest_name or folder_name, extra)
@@ -794,9 +800,8 @@ class TestFindingKinds(unittest.TestCase):
 
 
 def tearDownModule():
-    for path in pathlib.Path(tempfile.gettempdir()).glob("tmp*"):
-        if (path / "acme-thing").exists() or (path / "renamed-maintenance").exists():
-            shutil.rmtree(path, ignore_errors=True)
+    for path in _TEMP_DIRS:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 if __name__ == "__main__":
