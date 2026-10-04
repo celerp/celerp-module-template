@@ -138,14 +138,14 @@ fair game, and this module uses both.
 Three of these rules are enforced, so a mistake surfaces before a restart rather
 than in front of a user:
 
-- Rule 1 and rule 5 are checked by `lint.py:539` and `lint.py:239`, and the slot
-  and table rules above by `lint.py:390` and `lint.py:618`. `tests/test_core_parity.py`
+- Rule 1 and rule 5 are checked by `lint.py:541` and `lint.py:241`, and the slot
+  and table rules above by `lint.py:392` and `lint.py:620`. `tests/test_core_parity.py`
   loads each case through Celerp's own loader and fails wherever lint and the loader
   disagree. Run
   `python lint.py acme-maintenance` (or your renamed folder) before every restart.
 - Rule 2 is checked by a test that renders every view and fails on any class core
   neither styles nor emits: `acme-maintenance/tests/test_render.py:328`.
-- The protected-import rule above is checked by `lint.py` as well (`lint.py:192`),
+- The protected-import rule above is checked by `lint.py` as well (`lint.py:194`),
   so you find out before a restart rather than from a module that will not load.
 - The citations in this file are checked too, so guidance that has drifted from the
   code fails a test instead of quietly misleading the next reader.

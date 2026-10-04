@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: MIT
 """Lint a Celerp module without installing the app.
 
-Runs the same structural checks the loader runs at startup, so you catch
-problems in seconds instead of on a failed boot:
+Checks the rules the Celerp 2.5.4 loader enforces that need only the module's own
+files, so you catch problems in seconds instead of on a failed boot. Where it cannot
+tell without running the module's code it refuses rather than guesses, and it cannot
+see other installed modules:
   - the folder has an __init__.py with a PLUGIN_MANIFEST
   - the manifest has the required identity fields and at least one slot/route
   - the module name is not in the reserved `celerp-` namespace
@@ -618,7 +620,8 @@ def _company_backup_problems(manifest: dict, folder: Path) -> list[str]:
 def _table_prefix_problems(manifest: dict) -> list[str]:
     """The table_prefix rules Celerp checks at install (importer._validate_table_prefix)
     that need nothing but the manifest. Celerp also refuses a prefix that overlaps
-    another installed module's prefix or tables, which only the installation can tell."""
+    another installed module's (neither prefix may be a prefix of the other) or
+    claims one of its tables, which only the installation can tell."""
     if "table_prefix" not in manifest:
         if manifest.get("migrations"):
             return ["migrations needs a table_prefix naming the tables the module owns, "

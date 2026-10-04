@@ -85,9 +85,12 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    request one decision instead of two.
 4. Rename the tables in `models.py` and the migrations, prefixed with your name,
    and set the manifest's `table_prefix` to that prefix (at least 3 characters,
-   ending in `_`, such as `"acme_"`). From Celerp 2.5.4 a `table_prefix` that
-   is present must follow these rules even without migrations, so leave the key
-   out rather than setting it to `None` if the module has no tables.
+   ending in `_`, such as `"acme_"`). No table Celerp keeps for itself may start
+   with the prefix, so `label_`, `marketplace_` and `bank_` are taken, and no other
+   installed module's prefix may overlap it: neither prefix may be a prefix of the
+   other. From Celerp 2.5.4 a `table_prefix` that is present must follow these
+   rules even without migrations, so leave the key out rather than setting it to
+   `None` if the module has no tables.
    List each one in the manifest's `company_backup` as `"include"` (the company's
    records, carried by a company backup) or `"exclude"` (this installation's state,
    such as stored credentials). Celerp refuses to back up a company while one of
@@ -95,11 +98,24 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
 5. Copy `acme-maintenance/tests/conftest.py` and keep the suite honest. It stands
    the real API app and the real pages up against SQLite with nothing mocked, so
    a test failure means a user-visible failure.
-6. `python lint.py your-thing/` before every restart - it runs the same checks
-   the loader runs plus the two mistakes that are invisible at runtime, so you
-   catch them in seconds instead of on a failed boot. Rename the folder and the
+6. `python lint.py your-thing/` before every restart - it checks the rules the
+   Celerp 2.5.4 loader enforces that need only your module's files, plus the two
+   mistakes that are invisible at runtime, so you catch them in seconds instead
+   of on a failed boot. It reports two kinds of finding: problems Celerp refuses
+   or breaks on, and parts of the manifest Celerp ignores (an unknown key or slot
+   name, usually a typo). It exits 1 on either. Rename the folder and the
    manifest `name` together: Celerp installs a module under its manifest name
    whatever the folder is called, and lint says so if the two drift apart.
+
+   `tests/test_core_parity.py` loads every case lint checks through Celerp's own
+   loader and fails wherever the two disagree. Lint is stricter in a few places,
+   because it reads your code without running it: it refuses a slot callable it
+   cannot follow to a `def`, `async def`, class or lambda in your own files (a
+   decorated function, a star import, a `functools.partial`, a binding inside
+   `if` or `try`), a top-level package named like a Python standard library
+   module or starting `celerp_`, and a protected import in any file, used or
+   not. It cannot see other installed modules, so a prefix or table clash with
+   one only shows at install.
 
 ### About files
 
@@ -174,7 +190,31 @@ database; replace its body with a query against your own tables, scoped to the
 company id the aggregator passes in, mapping each match to a canonical row.
 `python lint.py your-thing/` flags a descriptor given as a list instead of one
 dict, missing a key, carrying an unknown one, naming a `result_key` outside those
-two, or a handler that is not a single `module:function` string.
+two, or a handler the loader would refuse (see the next section).
+
+## Rules every slot entry follows
+
+Any module may fill any slot, and from Celerp 2.5.4 the loader refuses a module
+whose slot entries break any of these:
+
+- Each entry is a dict.
+- `permission` and `write_permission`, where present, name keys from Celerp's
+  permission registry.
+- `requires_connector`, where set, is a connector id string.
+- A destination Celerp links to is a path inside Celerp (one leading `/`, never
+  `//`, no backslash and no control character): `nav` `href` and
+  `settings_href`, `bulk_action` `form_action` (required), and `item_action`
+  `href_template`.
+- A `projection_handler` entry names its event-type `prefix`.
+- A slot that names code to run (`handler`, or `render` for `doc_detail_actions`
+  and `doc_detail_badges`) gives one `module:function` that resolves to a
+  callable in your module's own files. It is an `async def` exactly where Celerp
+  awaits it (`search_provider`, `on_company_created`, `on_modules_ready`,
+  `doc_finalize_hook`, `on_doc_payment`) and a plain (not async) callable
+  everywhere else.
+
+Every top-level manifest field must also hold the one type Celerp reads it as;
+`python lint.py` reports each of these.
 
 ## A link on the Pricing tab
 
