@@ -36,7 +36,7 @@ acme-maintenance/               the module (copy and rename this whole folder)
     routes.py                   API: list / create / edit-field / mark-serviced /
                                 archive / restore / service log / files
     ui_routes.py                the /maintenance list, detail and calendar pages
-    migrations/                 Alembic migrations on the module's own branch
+    migrations/                 schema changes Celerp runs at every start
   tests/                        the module's suite: real database, real API app
     conftest.py                 the harness to copy into your own module
     test_api.py                 permissions, validation, and failure paths
@@ -128,8 +128,9 @@ listing, so a user reading either one sees the same answer.
   [community-modules](https://github.com/celerp/community-modules) adding one
   catalog entry. Its README has the full bar a listing must meet.
 - **Sell it**: paid modules go through Celerp's marketplace rather than the
-  community directory. The "Sell your module" section of the community-modules
-  README walks through it.
+  community directory. Sign in at [celerp.com/authors](https://www.celerp.com/authors/)
+  to publish one. The [module guide](https://www.celerp.com/docs/modules.html#share)
+  covers both routes.
 
 ## The search_provider slot
 
@@ -170,10 +171,50 @@ company id the aggregator passes in, mapping each match to a canonical row.
 dict, missing a key, carrying an unknown one, naming a `result_key` outside those
 two, or a handler that is not a single `module:function` string.
 
+## A link on the Pricing tab
+
+From Celerp 2.5.4 a module can put a link on rows of an item's Pricing tab, for
+example a page that suggests a price for one price list:
+
+```python
+"min_celerp_version": "2.5.4",
+"slots": {
+    "pricing_action": [{
+        "label": "Suggest price",
+        "href_template": "/acme-pricing/{entity_id}?list={price_list}&field={field_name}",
+        "show_on": ["sell", "manual", "editable"],
+        "permission": "set_inventory_prices",
+    }],
+},
+```
+
+`{entity_id}` is the item, `{price_list}` the list name and `{field_name}` the
+item field holding that price; each is URL-encoded. `show_on` limits the link to
+rows with every listed trait (`editable`/`readonly`, `sell`/`cost`,
+`manual`/`derived`); leave it out for every row. The link opens your page, and
+that page's route must check `set_inventory_prices` itself.
+
+`href_template` must be a path inside Celerp: one leading `/`, never `//`, no
+backslash and no control character. Braces may only wrap one of the three
+placeholders, and the descriptor takes only `label`, `label_key`,
+`href_template`, `permission`, `show_on` and `presentation`. From 2.5.4 the
+loader refuses a module that breaks any of these; 2.5.3 and earlier ignore the
+slot and show nothing. `python lint.py` reports each one, along with an unknown
+trait, whichever release you target. The sample module does not use this slot, so it still
+installs on 2.0.0.
+
 ## What to reach for next
 
-- More sidebar behavior and other slots (`bulk_action`, `item_action`,
-  `settings_tab`) - see the guide.
+- Other slots (`bulk_action`, `item_action`, `doc_detail_actions`,
+  `category_schema` and the rest), the manifest reference, the permission keys,
+  and how to list or sell a module - see the
+  [module guide](https://www.celerp.com/docs/modules.html). `item_action`,
+  `doc_detail_actions` and `doc_detail_badges` show only while the module is
+  switched on and the role holds the contribution's `permission`, from Celerp
+  2.5.4; older releases show them to everyone. Either way, the target page must
+  check permissions. From 2.5.4 an `item_action` `href_template` follows
+  the Pricing-row link rules (inside Celerp, braces only around `{entity_id}`),
+  and `python lint.py` reports a link that breaks them.
 - The public module API for AI features lives in `celerp.modules.api`. Which
   internals are off limits, and why, is in `AGENTS.md`; `lint.py` enforces it.
 

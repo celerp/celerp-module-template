@@ -7,8 +7,15 @@ problems in seconds instead of on a failed boot:
   - the folder has an __init__.py with a PLUGIN_MANIFEST
   - the manifest has the required identity fields and at least one slot/route
   - the module name is not in the reserved `celerp-` namespace
-  - the manifest and its nav slots use only keys Celerp actually reads, so a
-    misspelled or invented key is not silently ignored at load time
+  - the manifest, its slot names and its nav slots use only names Celerp
+    actually reads, so a misspelled or invented one is not silently ignored
+    at load time
+  - pricing_action entries have the shape the loader accepts: known keys only,
+    a link that stays inside Celerp, and braces only around a placeholder
+  - item_action links stay inside Celerp, with braces only around {entity_id}
+    (the loader enforces both slot checks from Celerp 2.5.4; 2.5.3 and earlier
+    ignore pricing_action and do not check item_action links)
+  - a value of the wrong type anywhere in the manifest is named as a problem
   - no source file imports a protected celerp internal (revenue-gated; the
     loader rejects modules that do)
   - no fragment is rendered with str(); FT.__str__ returns the element id, so
@@ -36,7 +43,15 @@ REQUIRED_FIELDS = ("name", "version", "display_name", "license")
 MANIFEST_KEYS = {
     "name", "version", "display_name", "label", "description", "license", "author",
     "min_celerp_version", "api_routes", "ui_routes", "slots", "migrations",
-    "table_prefix", "company_backup", "depends_on", "soft_depends", "requires", "first_party",
+    "table_prefix", "company_backup", "depends_on", "locales",
+}
+# Every slot core consumes (pricing_action from 2.5.4). A slot core does not read
+# is ignored at load time, so a misspelled slot name ships an entry that never appears.
+SLOT_NAMES = {
+    "nav", "search_provider", "bulk_action", "item_action", "doc_detail_actions",
+    "doc_detail_badges", "category_schema", "on_company_created", "on_modules_ready",
+    "send_to_targets", "catalog_channel", "projection_handler", "pricing_action",
+    "doc_finalize_hook", "on_doc_payment",
 }
 # How each table a module owns travels with a company backup.
 COMPANY_BACKUP_VALUES = {"include", "exclude"}
@@ -53,6 +68,18 @@ SEARCH_PROVIDER_KEYS = {"handler", "result_key", "permission"}
 # result_key names the list field the provider returns its rows under. The
 # aggregator reads exactly these two; any other value returns rows it never sees.
 SEARCH_PROVIDER_RESULT_KEYS = {"items", "entries"}
+# The pricing_action slot arrives in Celerp 2.5.4; 2.5.3 and earlier ignore it.
+# Kept in sync with the 2.5.4 loader's _validate_pricing_action
+# (celerp/modules/loader.py, not present in 2.5.3 and earlier), which refuses the
+# whole module when an entry breaks one of these rules.
+PRICING_ACTION_KEYS = {"label", "label_key", "href_template", "permission", "show_on", "presentation"}
+PRICING_ACTION_PLACEHOLDERS = {"entity_id", "price_list", "field_name"}
+PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
+# item_action links follow the same link rules, with {entity_id} their only
+# placeholder: the 2.5.4 loader's _validate_item_action. Releases up to 2.5.3
+# load item_action without checking the link, so lint.py is stricter than they are.
+ITEM_ACTION_PLACEHOLDERS = {"entity_id"}
+PRICING_ROW_TRAIT_PAIRS = (("editable", "readonly"), ("sell", "cost"), ("manual", "derived"))
 # min_celerp_version is optional, but when set it must be a dotted version so
 # the loader's comparison means something.
 MIN_VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
@@ -73,9 +100,13 @@ def _load_manifest(init_file: Path) -> tuple[dict | None, str | None]:
             for t in node.targets:
                 if isinstance(t, ast.Name) and t.id == "PLUGIN_MANIFEST":
                     try:
-                        return ast.literal_eval(node.value), None
+                        manifest = ast.literal_eval(node.value)
                     except Exception:
                         return None, None
+                    if not isinstance(manifest, dict):
+                        return None, (f"PLUGIN_MANIFEST must be a dict, not "
+                                      f"{type(manifest).__name__}")
+                    return manifest, None
     return None, None
 
 
@@ -98,14 +129,30 @@ def _protected_imports(py_file: Path) -> set[str]:
     return hits
 
 
+def _unknown(mapping: dict, known: set[str]) -> list:
+    """The keys of `mapping` outside `known`, in a stable order. A literal's keys can
+    mix types (1 and "x"), which plain sorted() cannot order."""
+    return sorted((k for k in mapping if k not in known), key=repr)
+
+
+def _slots(manifest: dict) -> dict:
+    """The slots dict, or an empty one when the author wrote something else
+    (reported once by lint())."""
+    slots = manifest.get("slots")
+    return slots if isinstance(slots, dict) else {}
+
+
 def _manifest_key_problems(manifest: dict) -> list[str]:
     """Keys Celerp will read straight past."""
     problems = []
-    for key in sorted(k for k in manifest if k not in MANIFEST_KEYS):
+    for key in _unknown(manifest, MANIFEST_KEYS):
         problems.append(f"manifest has unknown key {key!r} - Celerp reads none of it, "
                         f"so it does nothing at load time")
+    for slot in _unknown(_slots(manifest), SLOT_NAMES):
+        problems.append(f"manifest has unknown slot {slot!r} - Celerp reads none of it, "
+                        f"so it does nothing at load time")
     for index, item in enumerate(_nav_items(manifest)):
-        for key in sorted(k for k in item if k not in NAV_ITEM_KEYS):
+        for key in _unknown(item, NAV_ITEM_KEYS):
             hint = (" - core hides a nav entry by the role's \"permission\", so this "
                     "entry is visible to everyone" if key == "min_role" else "")
             problems.append(f"nav slot entry {index} has unknown key {key!r}{hint}")
@@ -114,7 +161,7 @@ def _manifest_key_problems(manifest: dict) -> list[str]:
 
 def _nav_items(manifest: dict) -> list[dict]:
     """The nav slot's entries, whichever shape the author wrote it in."""
-    nav = (manifest.get("slots") or {}).get("nav")
+    nav = _slots(manifest).get("nav")
     if isinstance(nav, dict):
         return [nav]
     if isinstance(nav, list):
@@ -132,7 +179,7 @@ def _search_provider_problems(manifest: dict) -> list[str]:
     an unknown key is read past in silence, and a result_key core does not
     aggregate returns rows nobody sees.
     """
-    slots = manifest.get("slots") or {}
+    slots = _slots(manifest)
     if "search_provider" not in slots:
         return []
     item = slots.get("search_provider")
@@ -145,7 +192,7 @@ def _search_provider_problems(manifest: dict) -> list[str]:
     problems = []
     for key in sorted(SEARCH_PROVIDER_KEYS - set(item)):
         problems.append(f"search_provider missing required key {key!r}")
-    for key in sorted(k for k in item if k not in SEARCH_PROVIDER_KEYS):
+    for key in _unknown(item, SEARCH_PROVIDER_KEYS):
         problems.append(f"search_provider has unknown key {key!r} - "
                         "Celerp reads none of it, so it does nothing at load time")
     handler = item.get("handler")
@@ -170,9 +217,89 @@ def _search_provider_problems(manifest: dict) -> list[str]:
                         "a provider is never implicitly public; name a real "
                         "Celerp permission key")
     result_key = item.get("result_key")
-    if "result_key" in item and result_key not in SEARCH_PROVIDER_RESULT_KEYS:
+    if "result_key" in item and not (isinstance(result_key, str)
+                                     and result_key in SEARCH_PROVIDER_RESULT_KEYS):
         problems.append(f"search_provider has result_key {result_key!r} - "
                         f"it must be one of {sorted(SEARCH_PROVIDER_RESULT_KEYS)}")
+    return problems
+
+
+def _is_app_local_path(path) -> bool:
+    """Celerp's app-local rule, copied because this script runs without Celerp
+    installed: one leading /, never //, no backslash, no ASCII control character.
+    From 2.5.4 it lives in celerp/services/app_paths.py is_app_local_path; 2.5.3 and
+    earlier have the same rule in ui/security.py."""
+    return (
+        isinstance(path, str)
+        and path.startswith("/")
+        and not path.startswith("//")
+        and "\\" not in path
+        and not any(ord(c) < 0x20 or ord(c) == 0x7F for c in path)
+    )
+
+
+def _href_template_problems(where: str, item: dict, placeholders: set[str]) -> list[str]:
+    """The 2.5.4 loader's link rules (loader.py _validate_href_template): an
+    href_template inside Celerp whose braces only wrap one of `placeholders`."""
+    href = item.get("href_template")
+    if not (isinstance(href, str) and href):
+        return [f"{where} needs an href_template"]
+    if not _is_app_local_path(href):
+        return [f"{where} href_template must be a path inside Celerp: one leading /, "
+                "never //, no backslash and no control character"]
+    problems = []
+    for name in sorted(set(PLACEHOLDER_RE.findall(href)) - placeholders):
+        problems.append(f"{where} href_template uses {{{name}}} - the placeholders are "
+                        + ", ".join(f"{{{p}}}" for p in sorted(placeholders)))
+    if set("{}") & set(PLACEHOLDER_RE.sub("", href)):
+        problems.append(f"{where} href_template has a stray brace - "
+                        "braces may only wrap a placeholder")
+    return problems
+
+
+def _item_action_problems(manifest: dict) -> list[str]:
+    """Every item_action entry the 2.5.4 loader would refuse (_validate_item_action)."""
+    entries = _slots(manifest).get("item_action")
+    if entries is None:
+        return []
+    problems = []
+    for index, item in enumerate(entries if isinstance(entries, list) else [entries]):
+        where = f"item_action entry {index}"
+        if not isinstance(item, dict):
+            problems.append(f"{where} must be a dict")
+            continue
+        problems.extend(_href_template_problems(where, item, ITEM_ACTION_PLACEHOLDERS))
+    return problems
+
+
+def _pricing_action_problems(manifest: dict) -> list[str]:
+    """Every pricing_action entry the 2.5.4 loader would refuse (_validate_pricing_action)."""
+    entries = _slots(manifest).get("pricing_action")
+    if entries is None:
+        return []
+    traits = {trait for pair in PRICING_ROW_TRAIT_PAIRS for trait in pair}
+    problems = []
+    for index, item in enumerate(entries if isinstance(entries, list) else [entries]):
+        where = f"pricing_action entry {index}"
+        if not isinstance(item, dict):
+            problems.append(f"{where} must be a dict")
+            continue
+        for key in _unknown(item, PRICING_ACTION_KEYS):
+            problems.append(f"{where} has unknown key {key!r} - the keys are "
+                            + ", ".join(sorted(PRICING_ACTION_KEYS)))
+        problems.extend(_href_template_problems(where, item, PRICING_ACTION_PLACEHOLDERS))
+        show_on = item.get("show_on", [])
+        # Members are type-checked before set(): a dict or list member is unhashable.
+        if not (isinstance(show_on, list) and all(isinstance(t, str) for t in show_on)
+                and set(show_on) <= traits):
+            problems.append(f"{where} show_on must be a list of {sorted(traits)}")
+        else:
+            for pair in PRICING_ROW_TRAIT_PAIRS:
+                if set(pair) <= set(show_on):
+                    problems.append(f"{where} show_on lists both {pair[0]!r} and {pair[1]!r}, "
+                                    "so the action would never show")
+        if item.get("presentation", "page") != "page":
+            problems.append(f'{where} presentation must be "page"')
     return problems
 
 
@@ -243,9 +370,11 @@ def _company_backup_problems(manifest: dict, folder: Path) -> list[str]:
     if not isinstance(declared, dict):
         return ["company_backup must map each table name to \"include\" or \"exclude\""]
     prefix = manifest.get("table_prefix") or ""
+    if not isinstance(prefix, str):
+        prefix = ""                                   # reported once by lint()
     problems = []
-    for table, how in sorted(declared.items()):
-        if how not in COMPANY_BACKUP_VALUES:
+    for table, how in sorted(declared.items(), key=lambda pair: repr(pair[0])):
+        if not (isinstance(how, str) and how in COMPANY_BACKUP_VALUES):
             problems.append(f"company_backup says {how!r} for {table!r} - it must be \"include\" "
                             "(company data) or \"exclude\" (installation state such as credentials)")
         if not (prefix and str(table).startswith(prefix)):
@@ -287,10 +416,16 @@ def lint(folder: Path) -> list[str]:
     if min_version is not None and not MIN_VERSION_RE.match(str(min_version)):
         problems.append(f"min_celerp_version {min_version!r} is not a dotted version "
                         "number like '1.4.2' - the version check would not work")
+    if "slots" in manifest and not isinstance(manifest["slots"], dict):
+        problems.append("slots must be a dict mapping each slot name to its entries")
+    if "table_prefix" in manifest and not isinstance(manifest["table_prefix"], str):
+        problems.append("table_prefix must be a string, such as 'acme_'")
     if not (manifest.get("slots") or manifest.get("api_routes") or manifest.get("ui_routes")):
         problems.append("manifest declares no slots and no routes - the module does nothing")
     problems.extend(_manifest_key_problems(manifest))
     problems.extend(_search_provider_problems(manifest))
+    problems.extend(_item_action_problems(manifest))
+    problems.extend(_pricing_action_problems(manifest))
     problems.extend(_company_backup_problems(manifest, folder))
 
     for py_file in folder.rglob("*.py"):

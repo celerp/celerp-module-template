@@ -136,10 +136,13 @@ async def _context(request: Request) -> tuple[dict, bool]:
     """The company settings the chrome needs, and whether this role may write.
 
     Permissions can be re-pointed per company in settings, so the answer comes
-    from the same helper and the same key the API router enforces.
+    from the same helper and the same key the API router enforces. Settings that
+    cannot be read leave that answer unknown, so the page shows no write controls.
     """
     status, company = await _call(request, "get", "/companies/me")
-    settings = (company.get("settings") or {}) if status == 200 else {}
+    if status != 200:
+        return {}, False
+    settings = company.get("settings") or {}
     return settings, role_has_permission(settings, get_role(request), "edit_inventory")
 
 
