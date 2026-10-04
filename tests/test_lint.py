@@ -520,6 +520,92 @@ class TestMalformedManifestValues(unittest.TestCase):
                                                      % ("",)), list)
 
 
+_NOT_STR = (1, 1.5, True, ["x"], {"x": 1}, ("x",))
+_NOT_DICT = ("x", 1, True, ["x"], ("x",))
+
+
+class TestManifestFieldTypes(unittest.TestCase):
+    """Every top-level manifest field Celerp reads has one type. A value of any other
+    type is named as a problem on its own: the fixture is clean apart from that one
+    field, so the problem cannot hide behind, or be stood in for by, another one."""
+
+    BASE = {"name": "acme-thing", "version": "0.1.0", "display_name": "Thing",
+            "license": "MIT", "api_routes": "thing.api_routes",
+            "ui_routes": "thing.ui_routes"}
+    WRONG = {
+        **{field: _NOT_STR for field in ("name", "version", "display_name", "label",
+                                        "description", "license", "author",
+                                        "min_celerp_version", "api_routes", "ui_routes",
+                                        "migrations", "table_prefix")},
+        **{field: _NOT_DICT for field in ("slots", "company_backup", "locales")},
+        "depends_on": ("acme-base", 1, True, {"acme-base": 1}, ("acme-base",),
+                       ["acme-base", 1], [None], [["acme-base"]]),
+    }
+
+    def _problems(self, **fields) -> list[str]:
+        manifest = {**self.BASE, **fields}
+        return lint.lint(_module("acme-thing", body=f"PLUGIN_MANIFEST = {manifest!r}\n"))
+
+    def test_base_fixture_is_clean(self):
+        self.assertEqual(self._problems(), [])
+
+    def test_every_field_lint_knows_has_a_type(self):
+        self.assertEqual(set(lint.MANIFEST_FIELD_TYPES), lint.MANIFEST_KEYS)
+        self.assertEqual(set(self.WRONG), lint.MANIFEST_KEYS)
+
+    def test_a_value_of_the_wrong_type_is_named(self):
+        for field, values in sorted(self.WRONG.items()):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    problems = self._problems(**{field: value})
+                    self.assertEqual(len(problems), 1, problems)
+                    self.assertTrue(problems[0].startswith(f"{field} must be "), problems)
+
+    def test_min_celerp_version_number_is_not_a_version_string(self):
+        # str(1) is "1", which the dotted-version check would accept.
+        self.assertEqual(self._problems(min_celerp_version=1),
+                         ["min_celerp_version must be a string, not int"])
+
+    def test_depends_on_string_is_not_a_list_of_names(self):
+        # Celerp would iterate "acme-base" letter by letter.
+        self.assertEqual(self._problems(depends_on="acme-base"),
+                         ["depends_on must be a list of strings, not str"])
+
+    def test_values_of_the_right_type_are_clean(self):
+        self.assertEqual(self._problems(
+            label="Thing", description="Does things", author="Acme", min_celerp_version="2.5.4",
+            depends_on=["acme-base"], locales={}, slots={}, migrations="thing.migrations",
+            table_prefix="acme_", company_backup={}), [])
+
+    def test_none_is_an_absent_optional_field(self):
+        # Celerp reads None the same as a missing key.
+        for field in sorted(lint.MANIFEST_KEYS - set(lint.REQUIRED_FIELDS)):
+            with self.subTest(field=field):
+                self.assertEqual(self._problems(**{field: None}), [])
+
+
+class TestTablePrefixShape(unittest.TestCase):
+    """The table_prefix rules Celerp checks without looking at any other module."""
+
+    def _problems(self, extra: str) -> list[str]:
+        return [p for p in lint.lint(_module("acme-thing", extra=extra)) if "table_prefix" in p]
+
+    def test_well_formed_prefix_clean(self):
+        for extra in ('"table_prefix": "acme_",', '"table_prefix": "acme_", "migrations": "thing.migrations",'):
+            with self.subTest(extra=extra):
+                self.assertEqual(self._problems(extra), [])
+
+    def test_malformed_prefix_flagged_with_or_without_migrations(self):
+        for prefix in ("", "a_", "acme", "_"):
+            for migrations in ("", '"migrations": "thing.migrations",'):
+                with self.subTest(prefix=prefix, migrations=migrations):
+                    self.assertTrue(self._problems(f'"table_prefix": {prefix!r}, {migrations}'))
+
+    def test_migrations_without_prefix_flagged(self):
+        problems = self._problems('"migrations": "thing.migrations",')
+        self.assertTrue(any("migrations" in p for p in problems), problems)
+
+
 def tearDownModule():
     for path in pathlib.Path(tempfile.gettempdir()).glob("tmp*"):
         if (path / "acme-thing").exists() or (path / "renamed-maintenance").exists():

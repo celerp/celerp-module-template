@@ -15,7 +15,9 @@ problems in seconds instead of on a failed boot:
   - item_action links stay inside Celerp, with braces only around {entity_id}
     (the loader enforces both slot checks from Celerp 2.5.4; 2.5.3 and earlier
     ignore pricing_action and do not check item_action links)
-  - a value of the wrong type anywhere in the manifest is named as a problem
+  - every top-level manifest field holds the one type Celerp reads it as, and a
+    value of the wrong type anywhere in the manifest is named as a problem
+  - table_prefix has the shape Celerp requires, and a module with migrations sets one
   - no source file imports a protected celerp internal (revenue-gated; the
     loader rejects modules that do)
   - no fragment is rendered with str(); FT.__str__ returns the element id, so
@@ -37,14 +39,24 @@ PROTECTED = {
     "celerp.gateway", "celerp.connectors",
 }
 REQUIRED_FIELDS = ("name", "version", "display_name", "license")
-# Every key Celerp reads out of a manifest. An unknown key is not an error to the
-# loader, it is simply ignored, which is why it has to be an error here: a module
-# whose gating key is misspelled ships wide open and nothing says a word.
-MANIFEST_KEYS = {
-    "name", "version", "display_name", "label", "description", "license", "author",
-    "min_celerp_version", "api_routes", "ui_routes", "slots", "migrations",
-    "table_prefix", "company_backup", "depends_on", "locales",
+# Every top-level field Celerp reads out of a manifest, and the one type it reads
+# it as (celerp/modules/loader.py, importer.py, migrations_runner.py). Any other
+# type breaks in core rather than being refused: a depends_on string is iterated
+# letter by letter, a migrations number has no .split(). None is the same as
+# leaving the field out, which is how Celerp reads it. depends_on is a list of
+# strings.
+MANIFEST_FIELD_TYPES = {
+    **dict.fromkeys(("name", "version", "display_name", "label", "description", "license",
+                     "author", "min_celerp_version", "api_routes", "ui_routes", "migrations",
+                     "table_prefix"), str),
+    **dict.fromkeys(("slots", "company_backup", "locales"), dict),
+    "depends_on": list,
 }
+# An unknown key is not an error to the loader, it is simply ignored, which is why
+# it has to be an error here: a module whose gating key is misspelled ships wide
+# open and nothing says a word.
+MANIFEST_KEYS = set(MANIFEST_FIELD_TYPES)
+TYPE_NAMES = {str: "a string", dict: "a dict", list: "a list of strings"}
 # Every slot core consumes (pricing_action from 2.5.4). A slot core does not read
 # is ignored at load time, so a misspelled slot name ships an entry that never appears.
 SLOT_NAMES = {
@@ -83,6 +95,9 @@ PRICING_ROW_TRAIT_PAIRS = (("editable", "readonly"), ("sell", "cost"), ("manual"
 # min_celerp_version is optional, but when set it must be a dotted version so
 # the loader's comparison means something.
 MIN_VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
+# The migration runner refuses a shorter prefix or one without the trailing
+# underscore (celerp/modules/migrations_runner.py _prefix_ok).
+MIN_TABLE_PREFIX_LEN = 3
 
 
 def _load_manifest(init_file: Path) -> tuple[dict | None, str | None]:
@@ -129,6 +144,21 @@ def _protected_imports(py_file: Path) -> set[str]:
     return hits
 
 
+def _type_problem(field, value) -> str | None:
+    """Why `value` cannot be manifest field `field`, or None when it can (or when
+    `field` is not one Celerp reads; _manifest_key_problems names those)."""
+    expected = MANIFEST_FIELD_TYPES.get(field) if isinstance(field, str) else None
+    if expected is None or value is None:
+        return None
+    if not isinstance(value, expected):
+        return f"{field} must be {TYPE_NAMES[expected]}, not {type(value).__name__}"
+    if expected is list:
+        for member in value:
+            if not isinstance(member, str):
+                return f"{field} must be {TYPE_NAMES[list]}; {member!r} is not one"
+    return None
+
+
 def _unknown(mapping: dict, known: set[str]) -> list:
     """The keys of `mapping` outside `known`, in a stable order. A literal's keys can
     mix types (1 and "x"), which plain sorted() cannot order."""
@@ -136,10 +166,8 @@ def _unknown(mapping: dict, known: set[str]) -> list:
 
 
 def _slots(manifest: dict) -> dict:
-    """The slots dict, or an empty one when the author wrote something else
-    (reported once by lint())."""
-    slots = manifest.get("slots")
-    return slots if isinstance(slots, dict) else {}
+    """The slots dict (lint() has already dropped a slots value of the wrong type)."""
+    return manifest.get("slots", {})
 
 
 def _manifest_key_problems(manifest: dict) -> list[str]:
@@ -367,11 +395,7 @@ def _company_backup_problems(manifest: dict, folder: Path) -> list[str]:
     travels with a company backup, or to this installation, like credentials or caches.
     Celerp refuses to back up a company while one of its module tables is not named."""
     declared = manifest.get("company_backup", {})
-    if not isinstance(declared, dict):
-        return ["company_backup must map each table name to \"include\" or \"exclude\""]
-    prefix = manifest.get("table_prefix") or ""
-    if not isinstance(prefix, str):
-        prefix = ""                                   # reported once by lint()
+    prefix = manifest.get("table_prefix", "")
     problems = []
     for table, how in sorted(declared.items(), key=lambda pair: repr(pair[0])):
         if not (isinstance(how, str) and how in COMPANY_BACKUP_VALUES):
@@ -386,6 +410,22 @@ def _company_backup_problems(manifest: dict, folder: Path) -> list[str]:
     return problems
 
 
+def _table_prefix_problems(manifest: dict) -> list[str]:
+    """The table_prefix rules that need nothing but the manifest. Celerp also refuses a
+    prefix that a core table or another installed module's prefix starts with, which
+    only the installation it lands on can tell."""
+    prefix = manifest.get("table_prefix")
+    if prefix is None:
+        if manifest.get("migrations"):
+            return ["migrations needs a table_prefix naming the tables the module owns, "
+                    "such as 'acme_' - Celerp refuses a module with migrations and no prefix"]
+        return []
+    if len(prefix) < MIN_TABLE_PREFIX_LEN or not prefix.endswith("_"):
+        return [f"table_prefix {prefix!r} must be at least {MIN_TABLE_PREFIX_LEN} characters "
+                "and end with an underscore, such as 'acme_'"]
+    return []
+
+
 def lint(folder: Path) -> list[str]:
     problems: list[str] = []
     init_file = folder / "__init__.py"
@@ -398,10 +438,18 @@ def lint(folder: Path) -> list[str]:
     if manifest is None:
         return [f"{init_file}: no parseable PLUGIN_MANIFEST dict"]
 
+    # Types first: every check below reads a field only once it has the right type,
+    # so a value of the wrong type is named once, as itself, and never trips them.
+    wrong = {field: problem for field, value in manifest.items()
+             if (problem := _type_problem(field, value))}
+    problems.extend(wrong.values())
+    manifest = {field: value for field, value in manifest.items()
+                if field not in wrong and not (value is None and field in MANIFEST_KEYS)}
+
     for field in REQUIRED_FIELDS:
-        if not manifest.get(field):
+        if field not in wrong and not manifest.get(field):
             problems.append(f"manifest missing required field: {field!r}")
-    name = str(manifest.get("name", ""))
+    name = manifest.get("name", "")
     if name.startswith("celerp-"):
         problems.append(f"name {name!r} uses the reserved `celerp-` namespace - "
                         "prefix with your own vendor name")
@@ -413,15 +461,12 @@ def lint(folder: Path) -> list[str]:
                         f"PLUGIN_MANIFEST['name'] {name!r} - Celerp installs modules "
                         f"under the manifest name, so this would install as {name!r}")
     min_version = manifest.get("min_celerp_version")
-    if min_version is not None and not MIN_VERSION_RE.match(str(min_version)):
+    if min_version is not None and not MIN_VERSION_RE.match(min_version):
         problems.append(f"min_celerp_version {min_version!r} is not a dotted version "
                         "number like '1.4.2' - the version check would not work")
-    if "slots" in manifest and not isinstance(manifest["slots"], dict):
-        problems.append("slots must be a dict mapping each slot name to its entries")
-    if "table_prefix" in manifest and not isinstance(manifest["table_prefix"], str):
-        problems.append("table_prefix must be a string, such as 'acme_'")
     if not (manifest.get("slots") or manifest.get("api_routes") or manifest.get("ui_routes")):
         problems.append("manifest declares no slots and no routes - the module does nothing")
+    problems.extend(_table_prefix_problems(manifest))
     problems.extend(_manifest_key_problems(manifest))
     problems.extend(_search_provider_problems(manifest))
     problems.extend(_item_action_problems(manifest))

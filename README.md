@@ -82,7 +82,9 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    matches what your page does rather than inventing one. Your API router should
    depend on the same key, which is what makes hiding the link and refusing the
    request one decision instead of two.
-4. Rename the tables in `models.py` and the migrations, prefixed with your name.
+4. Rename the tables in `models.py` and the migrations, prefixed with your name,
+   and set the manifest's `table_prefix` to that prefix (at least 3 characters,
+   ending in `_`, such as `"acme_"`).
    List each one in the manifest's `company_backup` as `"include"` (the company's
    records, carried by a company backup) or `"exclude"` (this installation's state,
    such as stored credentials). Celerp refuses to back up a company while one of
