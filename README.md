@@ -77,6 +77,9 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
 2. Rename the folder and the inner package (keep the hyphen/underscore split:
    `your-thing` outside, `your_thing` inside). **Do not use a `celerp-` name -
    that prefix is reserved for official modules.**
+   Every package or `.py` file directly in the module folder is a name Python
+   imports it by, so none may be a name Python or Celerp already uses (no
+   `json.py`, no `ui/`, nothing starting `celerp_`).
 3. Update `PLUGIN_MANIFEST` in `__init__.py`: name, display name, the nav slot.
    The nav entry's `permission` is what hides it from a role that cannot use the
    page; permission keys are a fixed registry in Celerp, so reuse the key that
@@ -90,7 +93,9 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    installed module's prefix may overlap it: neither prefix may be a prefix of the
    other. From Celerp 2.5.4 a `table_prefix` that is present must follow these
    rules even without migrations, so leave the key out rather than setting it to
-   `None` if the module has no tables.
+   `None` if the module has no tables. Every table your code defines must start
+   with the prefix: Celerp takes out a module defining a table outside it, or any
+   table without one, before creating any table.
    List each one in the manifest's `company_backup` as `"include"` (the company's
    records, carried by a company backup) or `"exclude"` (this installation's state,
    such as stored credentials). Celerp refuses to back up a company while one of
@@ -113,10 +118,10 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    because it reads your code without running it: it refuses a slot callable it
    cannot follow to a `def`, `async def`, class or lambda in your own files (a
    decorated function, a star import, a `functools.partial`, a binding inside
-   `if` or `try`), a top-level package named like a Python standard library
-   module or starting `celerp_`, and a protected import in any file, used or
-   not. It cannot see other installed modules, so a prefix or table clash with
-   one only shows at install.
+   `if` or `try`) and a protected import in any file, used or not. It cannot see
+   other installed modules or packages, so a prefix or table clash with another
+   module, or a package name an installed package already uses, only shows when
+   Celerp loads the module.
 
 ### About files
 
@@ -198,7 +203,13 @@ two, or a handler the loader would refuse (see the next section).
 Any module may fill any slot, and from Celerp 2.5.4 the loader refuses a module
 whose slot entries break any of these:
 
-- Each entry is a dict.
+- Each entry is a dict, and carries what the code reading its slot takes from
+  it, in the type it reads it as: `nav` `order` is a number and `key`, `label`
+  and `group` are text; a `send_to_targets` entry names its `doc_type`; a
+  `catalog_channel` entry names its `id`; a `category_schema` entry names its
+  `category` and a list of `fields`, each a dict with a text `key` and, where
+  given, text `label` and `type` and a list of `options`; a `bulk_action`
+  `action_type` is `htmx` or `navigate`.
 - `permission` and `write_permission`, where present, name keys from Celerp's
   permission registry.
 - `requires_connector`, where set, is a connector id string.

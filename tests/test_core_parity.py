@@ -48,7 +48,8 @@ if not CORE and os.environ.get("CELERP_PARITY_REQUIRED"):
 
 ABSENT = object()
 # Every shape a manifest literal can take.
-SHAPES = ({}, [], [{}], [[]], [1, None], 1, 1.5, None, True, "x", {1: "x", "y": []}, ("x",))
+SHAPES = ({}, [], [{}], [[]], [1, None], 0, 1, 1.5, None, True, False, "", "x",
+          {1: "x", "y": []}, ("x",))
 PATHS = (
     "/q", "/q/a?b=c", "/café", "", "q", "//evil.example", "/\\evil.example", "/a\x01", "/a\x7f",
     "/a\n", "https://x.example", "javascript:alert(1)",
@@ -101,6 +102,8 @@ def _base(slot: str) -> dict:
         "pricing_action": {"label": "L", "href_template": "/q/{entity_id}"},
         "category_schema": {"category": "c", "fields": []},
         "projection_handler": {"prefix": "acme."},
+        "send_to_targets": {"label": "L", "doc_type": "quotation"},
+        "catalog_channel": {"label": "L", "id": "shop"},
         "search_provider": {"result_key": "items", "permission": "view_inventory"},
     }.get(slot, {"label": "L"})
     if slot in lint.CALLABLE_SLOTS:
@@ -289,6 +292,66 @@ class TestCoreParity(unittest.TestCase):
         variants += [{**good, "requires_connector": "shopify"}]
         self.assertParity(Case({"search_provider": v}, {"{pkg}/hooks.py": HOOKS}) for v in variants)
 
+    def test_entry_key_types(self):
+        """Each key the code reading a slot takes from an entry, in the type it reads."""
+        cases = []
+        for slot in sorted(lint.SLOT_NAMES):
+            base = _base(slot)
+            for key in lint.SLOT_ENTRY_KEYS[slot]:
+                cases.append(_slot_case(slot, {k: v for k, v in base.items() if k != key}))
+                cases += [_slot_case(slot, {**base, key: value})
+                          for value in SHAPES + ("acme", 3, 2.5, [{"key": "k"}])]
+        self.assertParity(cases)
+
+    def test_bulk_action_type(self):
+        base = _base("bulk_action")
+        self.assertParity(_slot_case("bulk_action", {**base, "action_type": value})
+                          for value in ("htmx", "navigate", "navgate", "HTMX") + SHAPES)
+
+    def test_category_fields(self):
+        base = _base("category_schema")
+        fields = [{"key": "k"}, {"key": ""}, {"label": "L"}, "k", None, {"key": 1}, {1: "k"}]
+        fields += [{"key": "k", key: value} for key in lint.CATEGORY_FIELD_KEYS
+                   for value in ("x", ["a"]) + SHAPES]
+        self.assertParity(_slot_case("category_schema", {**base, "fields": [field]})
+                          for field in fields)
+
+    def test_import_names(self):
+        """The package names a module answers to: its own folder's, and each package
+        or source file directly in the folder."""
+        cases = [Case({"nav": [_base("nav")]}, name=name)
+                 for name in ("acme_names", "json", "ui", "celerp", "default_modules",
+                              "celerp_x", "tabnanny")]
+        for rel in ("json.py", "ui/__init__.py", "celerp_x.py", "premium_modules/__init__.py",
+                    "acme_names_helper.py", "json/data.txt"):
+            cases.append(Case({"nav": [_base("nav")]}, {rel: ""}))
+        self.assertParity(cases)
+
+    def test_tables_inside_the_prefix(self):
+        """Every table the module's code defines starts with its table_prefix."""
+        routes = ("import sqlalchemy as sa\nfrom celerp.models.base import Base\n\n"
+                  "sa.Table({table!r}, Base.metadata, sa.Column('id', sa.Integer, primary_key=True))\n\n\n"
+                  "def setup_api_routes(app):\n    pass\n")
+        cases = []
+        for prefix, table in ((ABSENT, None), ("{pkg}_", None), ("{pkg}_", "{pkg}_items"),
+                              ("{pkg}_", "other{pkg}_items"), (ABSENT, "{pkg}_items"),
+                              ("{pkg}_x_", "{pkg}_items")):
+            files = {"{pkg}/__init__.py": "",
+                     "{pkg}/api.py": routes.format(table=table) if table
+                     else "def setup_api_routes(app):\n    pass\n"}
+            fields = {"api_routes": "{pkg}.api"}
+            if prefix is not ABSENT:
+                fields["table_prefix"] = prefix
+            if table:
+                fields["company_backup"] = {table: "include"}
+            cases.append(Case(files=files, **fields))
+        try:
+            self.assertParity(cases)
+        finally:
+            from celerp.models.base import Base
+            for key in [k for k in Base.metadata.tables if k.endswith("_items") and "acme_p" in k]:
+                Base.metadata.remove(Base.metadata.tables[key])
+
     def test_callable_ownership_and_provenance(self):
         """Who owns the code a callable slot names: shape, in-module source, protected
         imports (also through a local import), core and stdlib decoys, re-exports."""
@@ -368,7 +431,6 @@ class TestCoreParity(unittest.TestCase):
             "{pkg}/via.py": "from .impl_bad import setup_api_routes, setup_ui_routes\n",
             "{pkg}/impl_bad.py": ("from os.path import join as setup_api_routes\n"
                                   "from os.path import join as setup_ui_routes\n"),
-            "json.py": "def setup_api_routes(app):\n    pass\n\n\ndef setup_ui_routes(app):\n    pass\n",
         }
         links = {"{pkg}/linked.py": files["{pkg}/impl.py"]}
         cases = []
@@ -381,8 +443,11 @@ class TestCoreParity(unittest.TestCase):
             protected = {"{pkg}/protected.py": "import celerp.ai.service\n" + files["{pkg}/impl.py"]}
             cases.append(Case(files={**files, **protected}, **{key: "{pkg}.protected"}))
         self.assertParity(cases)
-        self.assertParity([Case(files=files, api_routes="{pkg}.impl", ui_routes="{pkg}.impl"),
-                           Case(files=files, api_routes="{pkg}.impl", ui_routes="{pkg}.is_async")],
+        # Flat, ui.py would sit at the top of the module, where its name is Celerp's.
+        flat = {rel: text for rel, text in files.items() if rel != "{pkg}/ui.py"}
+        self.assertParity([Case(files=flat, api_routes="{pkg}.impl", ui_routes="{pkg}.impl"),
+                           Case(files=flat, api_routes="{pkg}.impl", ui_routes="{pkg}.is_async"),
+                           Case(files=files, api_routes="{pkg}.impl", ui_routes="{pkg}.impl")],
                           flat=True)
 
     def test_migrations_package(self):
@@ -405,8 +470,7 @@ class TestCoreParity(unittest.TestCase):
     def test_where_lint_is_stricter(self):
         """What lint.py refuses although Celerp may load it. Callables only running the
         code could follow (a decorated function, a name a star import brings in, a
-        value built by a call), a package named like a Python module Celerp has not
-        imported yet, and a protected import in a file nothing imports. lint.py
+        value built by a call) and a protected import in a file nothing imports. lint.py
         refuses every one; Celerp loads some."""
         wrap = ("import functools\n\n\ndef wrap(f):\n    @functools.wraps(f)\n"
                 "    def inner(*a, **k):\n        return f(*a, **k)\n    return inner\n\n\n")
@@ -420,8 +484,6 @@ class TestCoreParity(unittest.TestCase):
                     ("built", f"import functools\nfrom .hooks import {fn} as _f\n{fn} = functools.partial(_f)\n")):
                 cases.append(_slot_case(slot, {**_base(slot), key: f"{{pkg}}.{module}:{fn}"},
                                         {f"{{pkg}}/{module}.py": text}))
-            cases.append(_slot_case(slot, {**_base(slot), key: f"tabnanny:{fn}"},
-                                    {"tabnanny.py": HOOKS}))
             cases.append(_slot_case(slot, _base(slot),
                                     {"{pkg}/unused.py": "import celerp.gateway\n"}))
         loaded = 0
@@ -499,6 +561,14 @@ class TestCoreParity(unittest.TestCase):
         self.assertEqual(lint.PROTECTED, set(loader._PROTECTED_BSL_INTERNALS))
         self.assertEqual(lint.SEARCH_PROVIDER_KEYS, set(loader._SEARCH_PROVIDER_KEYS))
         self.assertEqual(lint.SEARCH_PROVIDER_RESULT_KEYS, set(loader._SEARCH_RESULT_KEYS))
+        self.assertEqual(lint.SLOT_NAMES, slots.SLOT_NAMES)
+        self.assertEqual(lint.SLOT_ENTRY_KEYS, loader._SLOT_ENTRY_KEYS)
+        self.assertEqual(lint.ENTRY_TYPE_NAMES, loader._TYPE_NAMES)
+        self.assertEqual(lint.BULK_ACTION_TYPES, loader._BULK_ACTION_TYPES)
+        self.assertEqual(lint.CATEGORY_FIELD_KEYS, loader._CATEGORY_FIELD_KEYS)
+        self.assertEqual(lint.RESERVED_IMPORT_NAMES, loader._RESERVED_IMPORT_NAMES)
+        self.assertEqual(lint.RESERVED_IMPORT_PREFIX, loader._RESERVED_IMPORT_PREFIX)
+        self.assertEqual(set(lint.SLOT_CHECKS), set(loader._SLOT_VALIDATORS))
         # Every slot a core rule names is a slot lint knows.
         named = set(loader._CALLABLE_SLOTS) | set(loader._DESTINATION_KEYS) | set(loader._SLOT_VALIDATORS)
         self.assertLessEqual(named, lint.SLOT_NAMES)

@@ -688,10 +688,12 @@ class TestSlotEntryRules(unittest.TestCase):
         for key in ("permission", "write_permission"):
             for value in ("view_inventory", "manage_labels"):
                 with self.subTest(key=key, value=value):
-                    self.assertEqual(_problems({"category_schema": [{key: value}]}), [])
+                    self.assertEqual(_problems({"category_schema": [
+                        {"category": "c", "fields": [], key: value}]}), [])
             for value in ("", None, False, 0, [], "admin", "View_Inventory", ["view_inventory"]):
                 with self.subTest(key=key, value=value):
-                    problems = _problems({"category_schema": [{key: value}]})
+                    problems = _problems({"category_schema": [
+                        {"category": "c", "fields": [], key: value}]})
                     self.assertTrue(any(key in p and "permission key" in p for p in problems),
                                     problems)
 
@@ -701,11 +703,11 @@ class TestSlotEntryRules(unittest.TestCase):
         self.assertEqual(_problems({"settings_tab": [{"permission": "view_inventory"}]}), [])
 
     def test_requires_connector_is_a_connector_id_when_set(self):
-        for value in (None, "", 0, False, "shopify"):
+        for value in (None, "", "shopify"):
             with self.subTest(value=value):
                 self.assertEqual(_problems({"nav": [{"href": "/x", "requires_connector": value}]}),
                                  [])
-        for value in (1, True, ["shopify"], {"a": 1}):
+        for value in (0, False, 1, True, ["shopify"], {"a": 1}):
             with self.subTest(value=value):
                 problems = _problems({"nav": [{"href": "/x", "requires_connector": value}]})
                 self.assertTrue(any("requires_connector" in p for p in problems), problems)
@@ -736,7 +738,9 @@ class TestSlotEntryRules(unittest.TestCase):
             with self.subTest(prefix=prefix):
                 problems = _problems({"projection_handler": [
                     {"handler": "thing.hooks:sync_fn", "prefix": prefix}]})
-                self.assertTrue(any("needs a prefix" in p for p in problems), problems)
+                self.assertTrue(any("entry 0 prefix must" in p for p in problems), problems)
+        problems = _problems({"projection_handler": [{"handler": "thing.hooks:sync_fn"}]})
+        self.assertTrue(any("needs a prefix" in p for p in problems), problems)
         self.assertEqual(_problems({"projection_handler": [
             {"handler": "thing.hooks:sync_fn", "prefix": "acme."}]}), [])
 
@@ -770,8 +774,6 @@ class TestCallableSlots(unittest.TestCase):
             "thing/deco.py": "import functools\n\n\n@functools.lru_cache\ndef sync_fn():\n    pass\n",
             "thing/star.py": "from .hooks import *\n",
             "thing/nested.py": "if True:\n    def sync_fn():\n        pass\n",
-            "celerp/__init__.py": "",
-            "json.py": "def dumps(*a):\n    return ''\n",
         }
         self.assertEqual(self._one("doc_detail_actions", "thing.reexport:sync_fn", files), [])
         self.assertEqual(self._one("on_modules_ready", "thing.reexport:async_fn", files), [])
@@ -846,7 +848,6 @@ class TestRouteModules(unittest.TestCase):
         "thing/klass.py": "class setup_api_routes:\n    pass\n",
         "thing/lam.py": "setup_api_routes = lambda app: None\n",
         "thing/broken.py": "def setup_api_routes(:\n",
-        "json.py": "def setup_api_routes(app):\n    pass\n",
     }
 
     def test_the_modules_own_plain_setup(self):
@@ -939,6 +940,225 @@ class TestFindingKinds(unittest.TestCase):
                              capture_output=True, text=True)
         self.assertEqual(run.returncode, 1, run.stdout)
         self.assertIn("Celerp ignores", run.stdout)
+
+# One correct entry for every slot Celerp reads.
+VALID_ENTRIES = {
+    "nav": [{"key": "acme", "label": "Acme", "href": "/acme", "order": 40.5, "group": None}],
+    "search_provider": {"handler": "thing.hooks:async_fn", "result_key": "items",
+                        "permission": "view_inventory"},
+    "bulk_action": [{"label": "Go", "form_action": "/acme/go", "action_type": "navigate",
+                     "requires_connector": ""}],
+    "item_action": [{"label": "Open", "href_template": "/acme/{entity_id}"}],
+    "doc_detail_actions": [{"render": "thing.hooks:sync_fn"}],
+    "doc_detail_badges": [{"render": "thing.hooks:sync_fn"}],
+    "category_schema": [{"category": "Rings", "fields": [
+        {"key": "size", "label": "Size", "type": "select", "options": ["5", "6"]}]}],
+    "on_company_created": [{"handler": "thing.hooks:async_fn"}],
+    "on_modules_ready": [{"handler": "thing.hooks:async_fn"}],
+    "send_to_targets": [{"label": "Quote", "doc_type": "quotation"}],
+    "catalog_channel": [{"id": "shop", "label": "Shop", "marker": "S", "can_create": True,
+                         "write_permission": "edit_inventory", "requires_connector": "shop"}],
+    "projection_handler": [{"prefix": "acme.", "handler": "thing.hooks:sync_fn"}],
+    "pricing_action": [{"label": "Set", "href_template": "/acme/{entity_id}/{price_list}",
+                        "show_on": ["sell"]}],
+    "doc_finalize_hook": [{"handler": "thing.hooks:async_fn"}],
+    "on_doc_payment": [{"handler": "thing.hooks:async_fn"}],
+}
+
+# Literals of every type a manifest can hold.
+SHAPES = ({}, [], [{}], [[]], [1, None], 0, 1, 1.5, None, True, False, "", "x",
+          {1: "x", "y": []}, ("x",), {"x"})
+
+
+def _with(slot: str, **changes) -> dict:
+    entry = VALID_ENTRIES[slot]
+    if isinstance(entry, dict):
+        return {slot: {**entry, **changes}}
+    return {slot: [{**entry[0], **changes}]}
+
+
+class TestEntryTypes(unittest.TestCase):
+    """Each entry carries what the code reading its slot needs, in the type it reads
+    it as (the loader's _SLOT_ENTRY_KEYS)."""
+
+    def test_every_slot_has_its_entry_rules(self):
+        self.assertEqual(set(lint.SLOT_ENTRY_KEYS), lint.SLOT_NAMES)
+        self.assertEqual(set(VALID_ENTRIES), lint.SLOT_NAMES)
+
+    def test_correct_entries_are_clean(self):
+        self.assertEqual(_problems(VALID_ENTRIES), [])
+
+    def test_wrong_types_refused(self):
+        for slot, key, value in (
+                ("nav", "order", "1"), ("nav", "order", True), ("nav", "order", None),
+                ("nav", "key", ["acme"]), ("nav", "group", 3), ("nav", "label", 5),
+                ("nav", "label_key", ["nav.acme"]), ("bulk_action", "label", {"en": "Go"}),
+                ("send_to_targets", "doc_type", None), ("send_to_targets", "doc_type", 3),
+                ("catalog_channel", "id", 7), ("catalog_channel", "marker", 1),
+                ("catalog_channel", "can_create", "yes"), ("category_schema", "category", ["R"]),
+                ("category_schema", "fields", {"key": "size"}), ("item_action", "label", 3),
+                ("projection_handler", "prefix", 1)):
+            with self.subTest(slot=slot, key=key, value=value):
+                problems = _problems(_with(slot, **{key: value}))
+                self.assertTrue(any(f"{key} must be" in p for p in problems), problems)
+
+    def test_required_keys(self):
+        for slot, key in (("send_to_targets", "doc_type"), ("catalog_channel", "id"),
+                          ("category_schema", "category"), ("category_schema", "fields"),
+                          ("projection_handler", "prefix")):
+            with self.subTest(slot=slot, key=key):
+                entry = dict(VALID_ENTRIES[slot][0])
+                del entry[key]
+                self.assertTrue(any(f"needs a {key}" in p for p in _problems({slot: [entry]})))
+                if key != "fields":
+                    problems = _problems(_with(slot, **{key: ""}))
+                    self.assertTrue(any(f"{key} must not be empty" in p for p in problems),
+                                    problems)
+
+
+class TestBulkActionType(unittest.TestCase):
+    """The inventory toolbar runs a bulk action as htmx or navigate, nothing else."""
+
+    def test_action_type(self):
+        for value in ("htmx", "navigate"):
+            with self.subTest(value=value):
+                self.assertEqual(_problems(_with("bulk_action", action_type=value)), [])
+        entry = dict(_with("bulk_action")["bulk_action"][0])
+        del entry["action_type"]
+        self.assertEqual(_problems({"bulk_action": [entry]}), [])
+        for value in ("navgate", "", "HTMX"):
+            with self.subTest(value=value):
+                problems = _problems(_with("bulk_action", action_type=value))
+                self.assertTrue(any("action_type must be one of" in p for p in problems), problems)
+
+
+class TestCategorySchema(unittest.TestCase):
+    """category_schema fields are field definitions the item form reads."""
+
+    def test_fields(self):
+        for fields in ([], [{"key": "size"}], [{"key": "s", "label": "S", "type": "text"}],
+                       [{"key": "s", "options": []}]):
+            with self.subTest(fields=fields):
+                self.assertEqual(_problems(_with("category_schema", fields=fields)), [])
+        for fields in (["size"], [{"label": "Size"}], [{"key": 3}], [{"key": ""}],
+                       [{"key": "s", "options": "5,6"}], [{"key": "s", "label": 1}],
+                       [{"key": "s", "type": None}], [None]):
+            with self.subTest(fields=fields):
+                problems = _problems(_with("category_schema", fields=fields))
+                self.assertTrue(any("field definitions" in p for p in problems), problems)
+
+
+class TestImportNames(unittest.TestCase):
+    """A module's package names must be its own: not Python's and not Celerp's."""
+
+    def test_own_names_clean(self):
+        self.assertEqual(lint.lint(_module("acme-thing")), [])
+        folder = _module("acme-thing")
+        (folder / "acme_helpers.py").write_text("", encoding="utf-8")
+        self.assertEqual(lint.check(folder)[0], [])
+
+    def test_module_named_after_a_taken_package(self):
+        for name in ("json", "celerp", "ui", "default_modules", "celerp_x"):
+            with self.subTest(name=name):
+                problems = lint.check(_module(name))[0]
+                self.assertTrue(any(f"package name {name!r}" in p for p in problems), problems)
+
+    def test_package_or_file_named_after_a_taken_package(self):
+        for rel in ("json.py", "ui/__init__.py", "celerp/__init__.py", "celerp_inventory.py",
+                    "premium_modules/__init__.py"):
+            with self.subTest(rel=rel):
+                folder = _module("acme-thing")
+                (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+                (folder / rel).write_text("", encoding="utf-8")
+                root = rel.split("/")[0].removesuffix(".py")
+                problems = lint.check(folder)[0]
+                self.assertTrue(any(f"package name {root!r}" in p for p in problems), problems)
+
+    def test_a_plain_folder_is_not_a_package(self):
+        folder = _module("acme-thing")
+        (folder / "json").mkdir()
+        (folder / "json" / "data.txt").write_text("", encoding="utf-8")
+        self.assertEqual(lint.check(folder)[0], [])
+
+
+class TestTablesOutsideThePrefix(unittest.TestCase):
+    """Every table the module defines starts with its table_prefix."""
+
+    def _problems(self, prefix: str | None, table: str) -> list[str]:
+        extra = (f'"table_prefix": {prefix!r},' if prefix else "") + \
+            f'"company_backup": {{{table!r}: "include"}},'
+        folder = _module("acme-thing", extra=extra)
+        (folder / "thing" / "models.py").write_text(
+            "import sqlalchemy as sa\n"
+            f"items = sa.Table({table!r}, sa.MetaData())\n", encoding="utf-8")
+        return [p for p in lint.check(folder)[0] if "company_backup" not in p]
+
+    def test_inside_the_prefix(self):
+        self.assertEqual(self._problems("acme_", "acme_items"), [])
+
+    def test_outside_the_prefix(self):
+        problems = self._problems("acme_", "other_items")
+        self.assertTrue(any("does not start with table_prefix" in p for p in problems), problems)
+
+    def test_no_prefix(self):
+        problems = self._problems(None, "acme_items")
+        self.assertTrue(any("needs a table_prefix" in p for p in problems), problems)
+
+    def test_tablename_counts_too(self):
+        folder = _module("acme-thing", extra='"company_backup": {"acme_items": "include"},')
+        (folder / "models.py").write_text('class Thing:\n    __tablename__ = "acme_items"\n',
+                                          encoding="utf-8")
+        problems = lint.check(folder)[0]
+        self.assertTrue(any("needs a table_prefix" in p for p in problems), problems)
+
+
+class TestWrongTypedLiterals(unittest.TestCase):
+    """lint.py names a problem for any literal a manifest can hold, in any slot, key or
+    field, and never stops on a traceback."""
+
+    def _check(self, folder: pathlib.Path) -> list[str]:
+        problems, ignored = lint.check(folder)
+        self.assertIsInstance(problems, list)
+        self.assertIsInstance(ignored, list)
+        return problems
+
+    def test_every_slot_key(self):
+        keys = {"permission", "write_permission", "requires_connector", "href", "settings_href",
+                "form_action", "href_template", "show_on", "presentation", "fields", "handler",
+                "render", "action_type", "result_key"}
+        for slot in sorted(VALID_ENTRIES):
+            entry = VALID_ENTRIES[slot]
+            entry = entry if isinstance(entry, dict) else entry[0]
+            for key in sorted(keys | set(entry) | set(lint.SLOT_ENTRY_KEYS[slot])):
+                for value in SHAPES + tuple([shape] for shape in SHAPES):
+                    with self.subTest(slot=slot, key=key, value=value):
+                        self._check(_slots_module(_with(slot, **{key: value})))
+
+    def test_every_category_field_key(self):
+        for key in ("key", *lint.CATEGORY_FIELD_KEYS):
+            for value in SHAPES:
+                with self.subTest(key=key, value=value):
+                    self._check(_slots_module(_with("category_schema", fields=[
+                        {"key": "size", key: value}])))
+
+    def test_every_whole_contribution(self):
+        for slot in sorted(VALID_ENTRIES) + ["unknown_slot"]:
+            for value in SHAPES:
+                with self.subTest(slot=slot, value=value):
+                    self._check(_slots_module({slot: value}))
+
+    def test_every_manifest_field(self):
+        for field in sorted(lint.MANIFEST_KEYS):
+            for value in SHAPES:
+                with self.subTest(field=field, value=value):
+                    self._check(_module("acme-thing", extra=f'"{field}": {value!r},'))
+
+    def test_every_company_backup_entry(self):
+        for value in SHAPES:
+            for key in ("acme_items", 1, None):
+                with self.subTest(key=key, value=value):
+                    self._check(_module("acme-thing", extra=f'"table_prefix": "acme_", '
+                                        f'"company_backup": {{{key!r}: {value!r}}},'))
 
 
 def tearDownModule():

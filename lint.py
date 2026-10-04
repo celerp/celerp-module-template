@@ -10,14 +10,20 @@ see other installed modules:
   - the manifest has the required identity fields and at least one slot/route
   - the module name is letters, digits, '-' and '_' (64 at most), matches its
     folder, and is not in the reserved `celerp-` namespace
+  - the module's name, and each package or file directly in its folder, is a
+    package name Python and Celerp do not already use (Celerp also refuses the name
+    of a package installed beside it, which only the installation can tell)
   - api_routes and ui_routes name a file inside the module that defines (or imports
     from the module's own files) a plain, not async, setup_api_routes or
     setup_ui_routes
   - migrations names a package inside the module, and no migration file in it is a
     link to a file outside the module
   - every slot entry follows the rules the Celerp 2.5.4 loader enforces before it
-    loads a module: entries are dicts; a permission or write_permission names a
-    key from Celerp's permission registry; a requires_connector is a connector id;
+    loads a module: entries are dicts; each key the slot's page or service reads
+    holds the type it reads it as, and the keys it needs are there; a permission
+    or write_permission names a key from Celerp's permission registry; a
+    requires_connector is a connector id or None; a bulk_action names an
+    action_type the toolbar knows; category_schema fields are field definitions;
     nav href and settings_href and bulk_action form_action (required) are paths
     inside Celerp; a callable slot names a function in the module's own files,
     async exactly where Celerp awaits it; a projection_handler names its prefix
@@ -28,6 +34,7 @@ see other installed modules:
   - every top-level manifest field holds the one type Celerp reads it as
   - table_prefix has the shape Celerp requires, claims no table Celerp reserves,
     and a module with migrations sets one
+  - every table the module's code or migrations name starts with its table_prefix
   - no source file imports a protected celerp internal (revenue-gated; the
     loader rejects modules that do)
   - no fragment is rendered with str(); FT.__str__ returns the element id, so
@@ -169,10 +176,43 @@ CALLABLE_SLOTS = {
     "on_doc_payment": ("handler", True),
     "projection_handler": ("handler", False),
 }
+# Package names Celerp keeps for itself, and the prefix of its own modules' packages.
+RESERVED_IMPORT_NAMES = frozenset({"celerp", "ui", "default_modules", "premium_modules"})
+RESERVED_IMPORT_PREFIX = "celerp_"
 # Package names a module cannot use for its code: Python's own modules and Celerp's.
-# Celerp imports a callable by its dotted name, and a name Python or Celerp already
-# uses resolves to theirs, not to the file in the module.
-TAKEN_PACKAGE_NAMES = frozenset(sys.stdlib_module_names) | {"celerp", "ui"}
+# Celerp imports a module's code by package name, and a name Python or Celerp already
+# uses means theirs, not the module's file, to everything else in the process.
+TAKEN_PACKAGE_NAMES = frozenset(sys.stdlib_module_names) | RESERVED_IMPORT_NAMES
+# The action types the inventory toolbar runs a bulk_action as.
+BULK_ACTION_TYPES = frozenset({"htmx", "navigate"})
+# The keys a category_schema field definition may set beside its key, and their types.
+CATEGORY_FIELD_KEYS = {"label": (str,), "type": (str,), "options": (list,)}
+_TEXT, _NUMBER = (str,), (int, float)
+_LABEL_KEYS = {"label": (_TEXT, False), "label_key": (_TEXT, False)}
+# What the code reading each slot takes from an entry: per key, the types it reads
+# the value as and whether the entry must carry it (a required text value must not
+# be empty). Callable keys, destinations and permissions have their own rules above.
+SLOT_ENTRY_KEYS = {
+    "nav": {**_LABEL_KEYS, "key": (_TEXT, False), "group": ((str, type(None)), False),
+            "order": (_NUMBER, False)},
+    "bulk_action": {**_LABEL_KEYS, "action_type": (_TEXT, False)},
+    "send_to_targets": {**_LABEL_KEYS, "doc_type": (_TEXT, True)},
+    "catalog_channel": {**_LABEL_KEYS, "id": (_TEXT, True), "marker": (_TEXT, False),
+                        "can_create": ((bool,), False)},
+    "item_action": _LABEL_KEYS,
+    "pricing_action": _LABEL_KEYS,
+    "category_schema": {"category": (_TEXT, True), "fields": ((list,), True)},
+    "projection_handler": {"prefix": (_TEXT, True)},
+    "search_provider": {"result_key": (_TEXT, True)},
+    "doc_detail_actions": {},
+    "doc_detail_badges": {},
+    "on_company_created": {},
+    "on_modules_ready": {},
+    "doc_finalize_hook": {},
+    "on_doc_payment": {},
+}
+ENTRY_TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
+                    list: "a list", type(None): "None"}
 
 
 def _load_manifest(init_file: Path) -> tuple[dict | None, str | None]:
@@ -341,20 +381,37 @@ def _pricing_action_problems(where: str, item: dict) -> list[str]:
     return problems
 
 
-def _projection_handler_problems(where: str, item: dict) -> list[str]:
-    """The 2.5.4 loader's _validate_projection_handler, for one entry."""
-    prefix = item.get("prefix")
-    if not (isinstance(prefix, str) and prefix):
-        return [f"{where} needs a prefix: the event-type prefix it handles"]
+def _bulk_action_problems(where: str, item: dict) -> list[str]:
+    """The loader's _validate_bulk_action, for one entry."""
+    if item.get("action_type", "htmx") not in BULK_ACTION_TYPES:
+        return [f"{where} action_type must be one of {sorted(BULK_ACTION_TYPES)}, "
+                f"not {item['action_type']!r}"]
     return []
+
+
+def _category_schema_problems(where: str, item: dict) -> list[str]:
+    """The loader's _validate_category_schema, for one entry."""
+    return [f"{where} fields must be field definitions: a dict with a text key, and text "
+            f"label and type and a list of options where given, not {field!r}"
+            for field in item["fields"]
+            if not isinstance(field, dict) or not isinstance(field.get("key"), str)
+            or not field["key"]
+            or any(not _is_type(field[k], types)
+                   for k, types in CATEGORY_FIELD_KEYS.items() if k in field)]
 
 
 # Per-slot checks beyond the generic entry rules (the loader's _SLOT_VALIDATORS).
 SLOT_CHECKS = {
     "item_action": _item_action_problems,
     "pricing_action": _pricing_action_problems,
-    "projection_handler": _projection_handler_problems,
+    "bulk_action": _bulk_action_problems,
+    "category_schema": _category_schema_problems,
 }
+
+
+def _is_type(value, types: tuple) -> bool:
+    """isinstance, except that True and False are not numbers here (loader._is_type)."""
+    return isinstance(value, types) and (bool in types or not isinstance(value, bool))
 
 
 def _entry_problems(where: str, slot: str, item) -> list[str]:
@@ -363,12 +420,21 @@ def _entry_problems(where: str, slot: str, item) -> list[str]:
     if not isinstance(item, dict):
         return [f"{where} must be a dict, not {type(item).__name__}"]
     problems = []
+    for key, (types, required) in SLOT_ENTRY_KEYS.get(slot, {}).items():
+        if key not in item:
+            if required:
+                problems.append(f"{where} needs a {key}")
+        elif not _is_type(item[key], types):
+            names = " or ".join(dict.fromkeys(ENTRY_TYPE_NAMES[t] for t in types))
+            problems.append(f"{where} {key} must be {names}, not {item[key]!r}")
+        elif required and types == _TEXT and not item[key]:
+            problems.append(f"{where} {key} must not be empty")
     for key in PERMISSION_ENTRY_KEYS:
         if key in item and not (isinstance(item[key], str) and item[key] in PERMISSION_KEYS):
             problems.append(f"{where} {key} {item[key]!r} is not a Celerp permission key - "
                             f"pick the closest existing key, or leave {key} out")
     connector = item.get("requires_connector")
-    if connector and not isinstance(connector, str):
+    if connector is not None and not isinstance(connector, str):
         problems.append(f"{where} requires_connector must be a connector id, not {connector!r}")
     for key, required in DESTINATION_KEYS.get(slot, {}).items():
         if key not in item:
@@ -541,7 +607,7 @@ def _callable_problems(where: str, folder: Path, dotted, awaited: bool) -> list[
     top = module_path.split(".")[0]
     if not all(module_path.split(".")):
         return [f"{where} {dotted!r} has an empty part in its module path"]
-    if top in TAKEN_PACKAGE_NAMES or top.startswith("celerp_"):
+    if top in TAKEN_PACKAGE_NAMES or top.startswith(RESERVED_IMPORT_PREFIX):
         return [f"{where} {dotted!r}: the package name {top!r} belongs to Python or Celerp, "
                 "so Celerp would import theirs, not this module's code"]
     source = _module_source_file(folder, module_path)
@@ -657,7 +723,8 @@ def _owned_tables(folder: Path) -> set[str]:
             if isinstance(node, ast.Assign) and any(
                     isinstance(t, ast.Name) and t.id == "__tablename__" for t in node.targets):
                 value = node.value
-            elif isinstance(node, ast.Call) and _called_name(node) == "create_table" and node.args:
+            elif (isinstance(node, ast.Call) and _called_name(node) in ("create_table", "Table")
+                    and node.args):
                 value = node.args[0]
             else:
                 continue
@@ -684,6 +751,31 @@ def _company_backup_problems(manifest: dict, folder: Path) -> list[str]:
         problems.append(f"table {table!r} is not in company_backup - Celerp will refuse to back up "
                         "a company until it says \"include\" or \"exclude\"")
     return problems
+
+
+def _stray_table_problems(manifest: dict, folder: Path) -> list[str]:
+    """The loader's _stray_table_problem: every table the module defines carries
+    its table_prefix, so a module defining any table needs one."""
+    prefix = manifest.get("table_prefix")
+    tables = sorted(_owned_tables(folder))
+    if tables and not (isinstance(prefix, str) and prefix):
+        return [f"table {tables[0]!r} needs a table_prefix the module's tables start with - "
+                "Celerp takes out a module defining a table without one"]
+    return [f"table {table!r} does not start with table_prefix {prefix!r} - Celerp takes out "
+            "a module defining a table outside its prefix" for table in tables
+            if not table.startswith(prefix)]
+
+
+def _import_name_problems(folder: Path) -> list[str]:
+    """The loader's _check_import_names, as far as the module's own files tell: the
+    names the module answers to (loader._import_roots) are its folder's name and each
+    package or source file directly in the folder."""
+    roots = {folder.name} | {entry.stem for entry in folder.iterdir()
+                             if (entry.is_dir() and (entry / "__init__.py").is_file())
+                             or (entry.suffix == ".py" and entry.name != "__init__.py")}
+    return [f"the package name {root!r} is already used by Python or Celerp - the module "
+            "must use its own" for root in sorted(roots)
+            if root in TAKEN_PACKAGE_NAMES or root.startswith(RESERVED_IMPORT_PREFIX)]
 
 
 def _table_prefix_problems(manifest: dict) -> list[str]:
@@ -759,6 +851,8 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
     if not (manifest.get("slots") or manifest.get("api_routes") or manifest.get("ui_routes")):
         ignored.append("manifest declares no slots and no routes - the module does nothing")
     problems.extend(_table_prefix_problems(manifest))
+    problems.extend(_stray_table_problems(manifest, folder))
+    problems.extend(_import_name_problems(folder))
     problems.extend(_route_problems(manifest, folder))
     problems.extend(_migrations_problems(manifest, folder))
     problems.extend(_slot_problems(manifest, folder))
