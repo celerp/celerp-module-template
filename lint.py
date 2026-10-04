@@ -8,7 +8,13 @@ tell without running the module's code it refuses rather than guesses, and it ca
 see other installed modules:
   - the folder has an __init__.py with a PLUGIN_MANIFEST
   - the manifest has the required identity fields and at least one slot/route
-  - the module name is not in the reserved `celerp-` namespace
+  - the module name is letters, digits, '-' and '_' (64 at most), matches its
+    folder, and is not in the reserved `celerp-` namespace
+  - api_routes and ui_routes name a file inside the module that defines (or imports
+    from the module's own files) a plain, not async, setup_api_routes or
+    setup_ui_routes
+  - migrations names a package inside the module, and no migration file in it is a
+    link to a file outside the module
   - every slot entry follows the rules the Celerp 2.5.4 loader enforces before it
     loads a module: entries are dicts; a permission or write_permission names a
     key from Celerp's permission registry; a requires_connector is a connector id;
@@ -37,6 +43,7 @@ Exit 0 = clean, 1 = findings (printed).
 from __future__ import annotations
 
 import ast
+import os
 import re
 import sys
 from pathlib import Path
@@ -47,6 +54,8 @@ PROTECTED = {
     "celerp.gateway", "celerp.connectors",
 }
 REQUIRED_FIELDS = ("name", "version", "display_name", "license")
+# The longest module name Celerp accepts (celerp/modules/importer.py _NAME_MAX).
+NAME_MAX = 64
 # Every top-level field Celerp reads out of a manifest, and the one type it reads
 # it as (celerp/modules/loader.py, importer.py, migrations_runner.py). Lint refuses
 # any other type; Celerp refuses some (a slots list, a depends_on string) and
@@ -192,6 +201,9 @@ def _load_manifest(init_file: Path) -> tuple[dict | None, str | None]:
 
 
 def _protected_imports(py_file: Path) -> set[str]:
+    """Protected internals `py_file` imports: by name, as a submodule
+    (`from celerp.ai import quota`), or by a literal handed to
+    importlib.import_module or __import__ (the loader's _scan_protected_imports)."""
     hits: set[str] = set()
     try:
         tree = ast.parse(py_file.read_text())
@@ -201,8 +213,12 @@ def _protected_imports(py_file: Path) -> set[str]:
         names = []
         if isinstance(node, ast.Import):
             names = [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names = [node.module]
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+        elif (isinstance(node, ast.Call) and _called_name(node) in ("import_module", "__import__")
+                and node.args and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            names = [node.args[0].value]
         for name in names:
             for p in PROTECTED:
                 if name == p or name.startswith(p + "."):
@@ -434,6 +450,12 @@ def _module_source_file(folder: Path, module_path: str) -> Path | None:
     return None
 
 
+def _inside(path: Path, folder: Path) -> bool:
+    """Whether `path` resolves inside `folder`, links and '..' followed, as the
+    loader's _inside reads it."""
+    return Path(os.path.realpath(path)).is_relative_to(os.path.realpath(folder))
+
+
 def _parsed(source: Path) -> ast.Module | None:
     try:
         return ast.parse(source.read_text())
@@ -461,6 +483,8 @@ def _callable_kind(folder: Path, top: str, source: Path, name: str,
     """("async" or "sync", None) for the callable `name` in `source`, or (None, why)."""
     if (source, name) in seen:
         return None, "is defined in a circle of imports"
+    if not _inside(source, folder):
+        return None, f"is in {source.name}, a link to a file outside the module"
     seen.add((source, name))
     tree = _parsed(source)
     if tree is None:
@@ -535,6 +559,52 @@ def _callable_problems(where: str, folder: Path, dotted, awaited: bool) -> list[
     if not awaited and kind == "async":
         return [f"{where} {dotted!r} must not be async; Celerp calls it without awaiting"]
     return []
+
+
+def _route_problems(manifest: dict, folder: Path) -> list[str]:
+    """Why Celerp would refuse the module's api_routes or ui_routes: before any of
+    the module's code runs (loader._check_route_source) the file must be inside the
+    module and define setup_<kind>_routes or import it from the module's own files,
+    and before Celerp calls it (loader._register_module_routes) that setup must be
+    the module's own plain function."""
+    problems = []
+    for kind in ("api", "ui"):
+        key, setup = f"{kind}_routes", f"setup_{kind}_routes"
+        dotted = manifest.get(key)
+        if not dotted:
+            continue
+        found = _callable_problems(f"{key} setup", folder, f"{dotted}:{setup}", awaited=False)
+        if found:
+            problems += found
+            continue
+        binding = None
+        for node in _parsed(_module_source_file(folder, dotted)).body:
+            if _binds(node, setup):
+                binding = node
+        if not isinstance(binding, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ImportFrom)):
+            problems.append(f"{key} {dotted!r} must define {setup} with def, or import it "
+                            "from the module's own files")
+    return problems
+
+
+def _migrations_problems(manifest: dict, folder: Path) -> list[str]:
+    """The loader's module_migration_files: migrations is a dotted package path of
+    identifiers, resolved under the module folder, and neither the package nor a
+    migration file in it (one not starting with _) resolves outside the folder."""
+    package = manifest.get("migrations")
+    if not package:
+        return []
+    if not all(part.isidentifier() for part in package.split(".")):
+        return [f"migrations {package!r} must be a dotted package path inside the module, "
+                "such as 'acme_thing.migrations'"]
+    directory = folder.joinpath(*package.split("."))
+    if not _inside(directory, folder):
+        return [f"migrations {package!r} is a link to a folder outside the module"]
+    if not directory.is_dir():
+        return []
+    return [f"migration file {path.name!r} is a link to a file outside the module"
+            for path in sorted(directory.glob("*.py"))
+            if path.is_file() and not path.name.startswith("_") and not _inside(path, folder)]
 
 
 def _str_rendered_fragments(py_file: Path) -> list[str]:
@@ -667,6 +737,10 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
         if field not in wrong and not manifest.get(field):
             problems.append(f"manifest missing required field: {field!r}")
     name = manifest.get("name", "")
+    if name and (len(name) > NAME_MAX or not name[0].isalnum()
+                 or not all(c.isascii() and (c.isalnum() or c in "-_") for c in name)):
+        problems.append(f"name {name!r} must start with a letter or digit and hold only "
+                        f"letters, digits, '-' and '_', {NAME_MAX} characters at most")
     if name.startswith("celerp-"):
         problems.append(f"name {name!r} uses the reserved `celerp-` namespace - "
                         "prefix with your own vendor name")
@@ -685,6 +759,8 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
     if not (manifest.get("slots") or manifest.get("api_routes") or manifest.get("ui_routes")):
         ignored.append("manifest declares no slots and no routes - the module does nothing")
     problems.extend(_table_prefix_problems(manifest))
+    problems.extend(_route_problems(manifest, folder))
+    problems.extend(_migrations_problems(manifest, folder))
     problems.extend(_slot_problems(manifest, folder))
     problems.extend(_company_backup_problems(manifest, folder))
 

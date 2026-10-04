@@ -46,6 +46,12 @@ def _module(folder_name: str, manifest_name: str | None = None,
     folder.mkdir()
     text = body if body is not None else MANIFEST % (manifest_name or folder_name, extra)
     (folder / "__init__.py").write_text(text, encoding="utf-8")
+    # The route modules the fixtures name.
+    (folder / "thing").mkdir()
+    (folder / "thing" / "__init__.py").write_text("", encoding="utf-8")
+    for kind in ("api", "ui"):
+        (folder / "thing" / f"{kind}_routes.py").write_text(
+            f"def setup_{kind}_routes(app):\n    pass\n", encoding="utf-8")
     return folder
 
 
@@ -108,6 +114,21 @@ class TestProtectedImports(unittest.TestCase):
                                            encoding="utf-8")
         problems = lint.lint(folder)
         self.assertTrue(any("celerp.gateway" in p for p in problems), problems)
+
+    def test_protected_internal_imported_as_a_submodule_flagged(self):
+        folder = _module("acme-thing")
+        (folder / "service.py").write_text("from celerp.ai import quota\n", encoding="utf-8")
+        problems = lint.lint(folder)
+        self.assertTrue(any("celerp.ai.quota" in p for p in problems), problems)
+
+    def test_protected_internal_imported_by_name_at_run_time_flagged(self):
+        for call in ('importlib.import_module("celerp.gateway")', '__import__("celerp.gateway")'):
+            with self.subTest(call=call):
+                folder = _module("acme-thing")
+                (folder / "service.py").write_text(f"import importlib\n{call}\n",
+                                                   encoding="utf-8")
+                problems = lint.lint(folder)
+                self.assertTrue(any("celerp.gateway" in p for p in problems), problems)
 
     def test_reserved_prefix_flagged(self):
         folder = _module("celerp-thing")
@@ -228,7 +249,6 @@ class TestSearchProviderSlot(unittest.TestCase):
 
     def _provider(self, entry: str) -> pathlib.Path:
         folder = _module("acme-thing", extra=f'"slots": {{"search_provider": {entry}}},')
-        (folder / "thing").mkdir()
         (folder / "thing" / "search.py").write_text("async def go(q):\n    return []\n")
         return folder
 
@@ -784,6 +804,114 @@ class TestReservedTables(unittest.TestCase):
             with self.subTest(prefix=prefix):
                 self.assertEqual(
                     lint.check(_module("acme-thing", extra=f'"table_prefix": {prefix!r},'))[0], [])
+
+
+class TestModuleName(unittest.TestCase):
+    """Celerp refuses a module whose name it would not install (importer._validate_name)."""
+
+    def test_name_characters(self):
+        for name in ("acme-thing", "acme_thing", "Acme9", "9acme", "a" * 64):
+            with self.subTest(name=name):
+                self.assertEqual(lint.lint(_module(name)), [])
+        for name in ("-acme", "_acme", "acme.thing", "acme thing", "acmé", "a" * 65):
+            with self.subTest(name=name):
+                problems = lint.lint(_module(name))
+                self.assertTrue(any("letters, digits" in p for p in problems), problems)
+
+
+def _routes_module(routes: dict, files: dict) -> list[str]:
+    """Problems for acme-thing with `routes` in its manifest and `files` in it."""
+    extra = "".join(f'"{key}": {value!r},' for key, value in routes.items())
+    folder = _module("acme-thing", body=MANIFEST.replace('    "ui_routes": "thing.ui_routes",\n', "")
+                     % ("acme-thing", extra))
+    for rel, text in files.items():
+        (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+        (folder / rel).write_text(text, encoding="utf-8")
+    return lint.check(folder)[0]
+
+
+class TestRouteModules(unittest.TestCase):
+    """api_routes and ui_routes name the module's own file and its own plain setup
+    function, as Celerp checks before running any of the module's code and again
+    before calling the setup."""
+
+    FILES = {
+        "thing/__init__.py": "",
+        "thing/api.py": "def setup_api_routes(app):\n    pass\n",
+        "thing/ui.py": "from .impl import setup_ui_routes\n",
+        "thing/impl.py": "def setup_ui_routes(app):\n    pass\n",
+        "thing/is_async.py": "async def setup_api_routes(app):\n    pass\n",
+        "thing/missing.py": "def something_else(app):\n    pass\n",
+        "thing/foreign.py": "from os.path import join as setup_api_routes\n",
+        "thing/klass.py": "class setup_api_routes:\n    pass\n",
+        "thing/lam.py": "setup_api_routes = lambda app: None\n",
+        "thing/broken.py": "def setup_api_routes(:\n",
+        "json.py": "def setup_api_routes(app):\n    pass\n",
+    }
+
+    def test_the_modules_own_plain_setup(self):
+        self.assertEqual(_routes_module({"api_routes": "thing.api", "ui_routes": "thing.ui"},
+                                        self.FILES), [])
+
+    def test_refused(self):
+        for dotted in ("thing.is_async", "thing.missing", "thing.foreign", "thing.klass",
+                       "thing.lam", "thing.broken", "thing.nope", "json", "ui.routes.reports",
+                       "thing..api", "thing.api:x"):
+            with self.subTest(dotted=dotted):
+                problems = _routes_module({"api_routes": dotted}, self.FILES)
+                self.assertTrue(any("api_routes" in p for p in problems), problems)
+
+    def test_a_link_to_a_file_outside_the_module_is_refused(self):
+        outside = pathlib.Path(tempfile.mkdtemp())
+        _TEMP_DIRS.append(outside)
+        (outside / "api.py").write_text("def setup_api_routes(app):\n    pass\n", encoding="utf-8")
+        folder = _module("acme-thing")
+        (folder / "thing" / "api.py").symlink_to(outside / "api.py")
+        manifest = (folder / "__init__.py").read_text(encoding="utf-8")
+        (folder / "__init__.py").write_text(
+            manifest.replace('"ui_routes"', '"api_routes": "thing.api",\n    "ui_routes"'),
+            encoding="utf-8")
+        problems = lint.check(folder)[0]
+        self.assertTrue(any("outside the module" in p for p in problems), problems)
+
+
+class TestMigrationsPackage(unittest.TestCase):
+    """The migrations package and every migration file in it stay inside the module
+    (loader.module_migration_files)."""
+
+    def _check(self, package, setup=None) -> list[str]:
+        folder = _module("acme-thing", extra=f'"table_prefix": "acme_", "migrations": {package!r},')
+        (folder / "thing" / "migrations").mkdir()
+        (folder / "thing" / "migrations" / "m001.py").write_text("def upgrade():\n    pass\n",
+                                                                 encoding="utf-8")
+        if setup:
+            setup(folder)
+        return lint.check(folder)[0]
+
+    def test_inside_the_module(self):
+        self.assertEqual(self._check("thing.migrations"), [])
+        self.assertEqual(self._check("thing.not_there"), [])
+
+    def test_not_a_dotted_package_path(self):
+        for package in ("../outside", "/tmp", "thing/migrations", "thing..migrations",
+                        "thing.migrations.", "1thing.migrations", "thing.mig-rations"):
+            with self.subTest(package=package):
+                problems = self._check(package)
+                self.assertTrue(any("dotted package path" in p for p in problems), problems)
+
+    def test_links_outside_the_module(self):
+        outside = pathlib.Path(tempfile.mkdtemp())
+        _TEMP_DIRS.append(outside)
+        (outside / "evil.py").write_text("def upgrade():\n    pass\n", encoding="utf-8")
+        problems = self._check("thing.linked", lambda f: (f / "thing" / "linked").symlink_to(outside))
+        self.assertTrue(any("folder outside the module" in p for p in problems), problems)
+        problems = self._check("thing.migrations", lambda f: (
+            f / "thing" / "migrations" / "m002.py").symlink_to(outside / "evil.py"))
+        self.assertTrue(any("'m002.py'" in p and "outside the module" in p for p in problems),
+                        problems)
+        # Celerp skips files starting with _, so a link there runs nothing.
+        self.assertEqual(self._check("thing.migrations", lambda f: (
+            f / "thing" / "migrations" / "_helper.py").symlink_to(outside / "evil.py")), [])
 
 
 class TestFindingKinds(unittest.TestCase):

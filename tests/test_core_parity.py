@@ -5,9 +5,12 @@
 lint.py copies the rules Celerp enforces when it loads and installs a module,
 because it runs without Celerp installed. This test runs where Celerp 2.5.4 is
 importable and holds the copy to the original. Every case is a real module folder
-on disk. Celerp loads it through its complete loader (load_all: import,
-protected-import scan, every slot rule, callable resolution and provenance) or,
-for table_prefix, through its install check. lint.py checks the same folder.
+on disk. Celerp takes it through the path it boots with: admission before any of
+the module's code or migrations run (identity, route sources, the migrations
+package, protected imports), then load_all (import, every slot rule, callable
+resolution and provenance), then API and UI route registration (the setup
+functions' provenance), or, for table_prefix, through its install check. lint.py
+checks the same folder.
 For every rule, both must accept the same modules and refuse the same modules,
 and each rule's cases include both kinds.
 
@@ -36,7 +39,8 @@ _spec.loader.exec_module(lint)
 try:
     from celerp.modules import importer, loader, slots
     from celerp.services import permissions
-    CORE = hasattr(loader, "_validate_slots") and hasattr(importer, "reserved_tables")
+    from fastapi import FastAPI
+    CORE = hasattr(loader, "admit_modules") and hasattr(importer, "reserved_tables")
 except ImportError:
     CORE = False
 if not CORE and os.environ.get("CELERP_PARITY_REQUIRED"):
@@ -49,6 +53,8 @@ PATHS = (
     "/q", "/q/a?b=c", "/café", "", "q", "//evil.example", "/\\evil.example", "/a\x01", "/a\x7f",
     "/a\n", "https://x.example", "javascript:alert(1)",
 ) + SHAPES
+ROUTES = {"{pkg}/__init__.py": "",
+          "{pkg}/ui_routes.py": "def setup_ui_routes(app):\n    pass\n"}
 HOOKS = (
     "def sync_fn(*args, **kwargs):\n    return None\n\n\n"
     "async def async_fn(*args, **kwargs):\n    return None\n\n\n"
@@ -60,13 +66,17 @@ HOOKS = (
 
 class Case:
     """One module: a slots manifest, extra manifest fields and source files. Strings
-    in all three may say {pkg}, the module's inner package name."""
+    in all three may say {pkg}, the module's inner package name. `links` maps a path
+    in the module to a link to a file (text) or folder (dict of files) outside it;
+    `name` replaces the generated module name, folder included."""
 
-    def __init__(self, slots_value=ABSENT, files=None, **fields):
+    def __init__(self, slots_value=ABSENT, files=None, links=None, name=None, **fields):
         self.slots_value, self.files, self.fields = slots_value, files or {}, fields
+        self.links, self.name = links or {}, name
 
     def __repr__(self):
-        return f"Case(slots={self.slots_value!r}, files={sorted(self.files)}, {self.fields!r})"
+        return (f"Case(slots={self.slots_value!r}, files={sorted(self.files)}, "
+                f"links={sorted(self.links)}, name={self.name!r}, {self.fields!r})")
 
 
 def _fill(value, pkg: str):
@@ -99,10 +109,10 @@ def _base(slot: str) -> dict:
     return entry
 
 
-def _slot_case(slot: str, entry, files=None) -> Case:
+def _slot_case(slot: str, entry, files=None, links=None) -> Case:
     """`entry` in `slot`, shaped as that slot takes it (search_provider: one dict)."""
     return Case({slot: entry if slot == "search_provider" else [entry]},
-                {"{pkg}/__init__.py": "", "{pkg}/hooks.py": HOOKS, **(files or {})})
+                {"{pkg}/__init__.py": "", "{pkg}/hooks.py": HOOKS, **(files or {})}, links)
 
 
 @unittest.skipUnless(CORE, "needs Celerp 2.5.4 or later importable")
@@ -119,19 +129,32 @@ class TestCoreParity(unittest.TestCase):
         slots.clear()
         loader._loaded.clear()
         loader._load_errors.clear()
+        loader._admitted.clear()
 
     def _write(self, case: Case, flat: bool) -> tuple[pathlib.Path, str]:
         n = next(self.counter)
-        name = f"acmeflat{n}" if flat else f"acme-p{n}"
+        name = case.name or (f"acmeflat{n}" if flat else f"acme-p{n}")
         pkg = name if flat else f"acme_p{n}"
         folder = pathlib.Path(self.tmp.name) / f"case{n}" / name
         folder.mkdir(parents=True)
-        for rel, text in case.files.items():
+        outside = folder.parent / "outside"
+
+        def place(rel):
             target = folder / _fill(rel, pkg)
             if flat and target.parent.name == pkg:
                 target = folder / target.name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(_fill(text, pkg), encoding="utf-8")
+            return target
+
+        for rel, text in case.files.items():
+            place(rel).write_text(_fill(text, pkg), encoding="utf-8")
+        for index, (rel, content) in enumerate(case.links.items()):
+            real = outside / str(index)
+            for sub, text in (content if isinstance(content, dict) else {"": content}).items():
+                file = real / sub if sub else real.with_suffix(".py")
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(_fill(text, pkg), encoding="utf-8")
+            place(rel).symlink_to(real if isinstance(content, dict) else real.with_suffix(".py"))
         manifest = {"name": name, "version": "0.1.0", "display_name": "Thing", "license": "MIT"}
         manifest.update(_fill(case.fields, pkg))
         if case.slots_value is not ABSENT:
@@ -144,7 +167,12 @@ class TestCoreParity(unittest.TestCase):
         try:
             with mock.patch.object(loader, "_first_party_lock", lambda: {}):
                 try:
-                    loader.load_all(folder.parent, {folder.name})
+                    # The order main.py boots in: admit (migrations run only for an
+                    # admitted module), load, then each process's routes.
+                    admission = loader.admit_modules(folder.parent, {folder.name})
+                    loaded = loader.load_all(folder.parent, {folder.name}, admission=admission)
+                    loader.register_api_routes(FastAPI(), loaded)
+                    loader.register_ui_routes(FastAPI(), loaded)
                 except Exception:
                     return True  # the load pass itself failed: the module did not load
             return folder.name in loader.load_errors()
@@ -301,8 +329,77 @@ class TestCoreParity(unittest.TestCase):
             cases.append(case("celerp.services.app_paths:is_app_local_path", decoy))
             cases.append(case("json:" + ("loads" if awaited else "dumps"), decoy))
             cases.append(case(f"{{pkg}}.bad:{fn}", protected))
+            cases.append(case(f"{{pkg}}.sub:{fn}",
+                              {"{pkg}/sub.py": "from celerp.ai import quota\n" + HOOKS}))
+            cases.append(case(f"{{pkg}}.dyn:{fn}",
+                              {"{pkg}/dyn.py": "import importlib\nimportlib.import_module('celerp.gateway')\n" + HOOKS}))
+            cases.append(_slot_case(slot, {**base, key: f"{{pkg}}.linked:{fn}"}, files,
+                                    links={"{pkg}/linked.py": HOOKS}))
             cases.append(case(f"{{pkg}}.via:{fn}", transitive))
             cases.append(case(f"{{pkg}}:{fn}", {"{pkg}/__init__.py": f"from .hooks import {fn}\n"}))
+        self.assertParity(cases)
+
+    def test_module_name(self):
+        """The name Celerp admits a module under: its characters, its length, and the
+        reserved celerp- prefix."""
+        names = ("acme-x", "acme_x", "Acme9", "9acme", "a" * 64, "a" * 65, "-acme", "_acme",
+                 "acme.x", "acme x", "acmé", "celerp-x")
+        self.assertParity(Case({"nav": [_base("nav")]}, name=name) for name in names)
+
+    def test_route_entrypoints(self):
+        """api_routes and ui_routes: a file inside the module that defines setup or
+        imports it from the module's own code (checked before any code runs), and a
+        setup that is the module's own plain function (checked before it is called)."""
+        files = {
+            "{pkg}/__init__.py": "",
+            "{pkg}/api.py": "def setup_api_routes(app):\n    pass\n",
+            "{pkg}/ui.py": "def setup_ui_routes(app):\n    pass\n",
+            "{pkg}/both.py": "from .impl import setup_api_routes, setup_ui_routes\n",
+            "{pkg}/impl.py": ("def setup_api_routes(app):\n    pass\n\n\n"
+                              "def setup_ui_routes(app):\n    pass\n"),
+            "{pkg}/absolute.py": "from {pkg}.impl import setup_api_routes, setup_ui_routes\n",
+            "{pkg}/is_async.py": ("async def setup_api_routes(app):\n    pass\n\n\n"
+                                  "async def setup_ui_routes(app):\n    pass\n"),
+            "{pkg}/none.py": "def other(app):\n    pass\n",
+            "{pkg}/foreign.py": ("from os.path import join as setup_api_routes\n"
+                                 "from os.path import join as setup_ui_routes\n"),
+            "{pkg}/klass.py": "class setup_api_routes:\n    pass\n\n\nclass setup_ui_routes:\n    pass\n",
+            "{pkg}/broken.py": "def setup_api_routes(:\n",
+            "{pkg}/via.py": "from .impl_bad import setup_api_routes, setup_ui_routes\n",
+            "{pkg}/impl_bad.py": ("from os.path import join as setup_api_routes\n"
+                                  "from os.path import join as setup_ui_routes\n"),
+            "json.py": "def setup_api_routes(app):\n    pass\n\n\ndef setup_ui_routes(app):\n    pass\n",
+        }
+        links = {"{pkg}/linked.py": files["{pkg}/impl.py"]}
+        cases = []
+        for key in ("api_routes", "ui_routes"):
+            for module in ("{pkg}.api", "{pkg}.ui", "{pkg}.both", "{pkg}.absolute", "{pkg}.is_async",
+                           "{pkg}.none", "{pkg}.foreign", "{pkg}.klass", "{pkg}.broken",
+                           "{pkg}.via", "{pkg}.nope", "{pkg}.linked", "json",
+                           "ui.routes.reports", "celerp.main", "{pkg}..api"):
+                cases.append(Case(files=files, links=links, **{key: module}))
+            protected = {"{pkg}/protected.py": "import celerp.ai.service\n" + files["{pkg}/impl.py"]}
+            cases.append(Case(files={**files, **protected}, **{key: "{pkg}.protected"}))
+        self.assertParity(cases)
+        self.assertParity([Case(files=files, api_routes="{pkg}.impl", ui_routes="{pkg}.impl"),
+                           Case(files=files, api_routes="{pkg}.impl", ui_routes="{pkg}.is_async")],
+                          flat=True)
+
+    def test_migrations_package(self):
+        """The migrations package admission resolves before any migration runs: a
+        dotted path of identifiers whose folder, and every file in it not starting
+        with _, stay inside the module."""
+        migration = "def upgrade():\n    pass\n"
+        files = {**ROUTES, "{pkg}/migrations/__init__.py": "", "{pkg}/migrations/m001.py": migration}
+        cases = [Case(files=files, ui_routes="{pkg}.ui_routes", table_prefix="acme_", migrations=m)
+                 for m in ("{pkg}.migrations", "{pkg}.absent", "../outside", "/tmp", "{pkg}/migrations",
+                           "{pkg}..migrations", "{pkg}.migrations.", "1x.migrations", "{pkg}.mig-rations",
+                           "{pkg}")]
+        for package, link in (("{pkg}.linked", {"{pkg}/linked": {"m001.py": migration}}),
+                              ("{pkg}.migrations", {"{pkg}/migrations/m002.py": migration}),
+                              ("{pkg}.migrations", {"{pkg}/migrations/_helper.py": migration})):
+            cases.append(Case(files=files, links=link, ui_routes="{pkg}.ui_routes",
+                              table_prefix="acme_", migrations=package))
         self.assertParity(cases)
 
     def test_where_lint_is_stricter(self):
@@ -370,7 +467,8 @@ class TestCoreParity(unittest.TestCase):
                 manifest["table_prefix"] = prefix
             if migrations is not ABSENT:
                 manifest["migrations"] = migrations
-            folder, _ = self._write(Case(ui_routes="thing.ui_routes", **manifest), flat=False)
+            folder, _ = self._write(Case(files=ROUTES, ui_routes="{pkg}.ui_routes", **manifest),
+                                    flat=False)
             lint_refuses = bool(lint.check(folder)[0])
             with mock.patch.dict(os.environ, {"MODULE_DIR": str(modules)}):
                 try:
@@ -392,6 +490,7 @@ class TestCoreParity(unittest.TestCase):
         self.assertEqual(lint.CALLABLE_SLOTS, loader._CALLABLE_SLOTS)
         self.assertEqual(lint.RESERVED_TABLES, importer.reserved_tables("acme-thing"))
         self.assertEqual(lint.MIN_TABLE_PREFIX_LEN, importer.MIN_TABLE_PREFIX_LEN)
+        self.assertEqual(lint.NAME_MAX, importer._NAME_MAX)
         self.assertEqual(lint.PRICING_ACTION_KEYS, set(loader._PRICING_ACTION_KEYS))
         self.assertEqual(lint.PRICING_ACTION_PLACEHOLDERS, set(loader._PRICING_ACTION_PLACEHOLDERS))
         self.assertEqual(lint.ITEM_ACTION_PLACEHOLDERS, set(loader._ITEM_ACTION_PLACEHOLDERS))
