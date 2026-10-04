@@ -242,7 +242,9 @@ that page's route must check `set_inventory_prices` itself.
 `href_template` must be a path inside Celerp: one leading `/`, never `//`, no
 backslash and no control character. Braces may only wrap one of the three
 placeholders, the descriptor takes only `label`, `label_key`,
-`href_template`, `permission`, `show_on` and `presentation`, and `show_on` holds
+`href_template`, `permission`, `show_on`, `presentation` and
+`requires_connector` (the link shows only while the company is connected to
+that connector), and `show_on` holds
 only the six traits, never both of one pair. From 2.5.4 the loader refuses a
 module that breaks any of these; 2.5.3 and earlier ignore the slot and show
 nothing. `python lint.py` reports each one, whichever release you target. The sample module does not use this slot, so it still

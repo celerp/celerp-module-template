@@ -389,11 +389,25 @@ class TestPricingActionSlot(unittest.TestCase):
                                 f"{href!r} not reported: {problems}")
 
     def test_unknown_key_flagged(self):
-        for key in ("href", "show", "presentaton", "requires_connector"):
+        for key in ("href", "show", "presentaton", "requires_connectr"):
             with self.subTest(key=key):
                 problems = self._action(repr({"label": "Quote", "href_template": "/q", key: "x"}))
                 self.assertTrue(any("unknown key" in p and repr(key) in p for p in problems),
                                 f"{key!r} not reported: {problems}")
+
+    def test_requires_connector_is_a_connector_id(self):
+        # Celerp shows a pricing action naming a connector only while the company is
+        # connected to it, as it does for the other module actions.
+        for value in (None, "", "shopify"):
+            with self.subTest(value=value):
+                self.assertEqual(self._action(repr(
+                    {"label": "Quote", "href_template": "/q", "requires_connector": value})), [])
+        for value in (1, True, ["shopify"]):
+            with self.subTest(value=value):
+                problems = self._action(repr(
+                    {"label": "Quote", "href_template": "/q", "requires_connector": value}))
+                self.assertTrue(any("requires_connector must be a connector id" in p
+                                    for p in problems), problems)
 
     def test_every_accepted_key_clean(self):
         self.assertEqual(self._action(repr({

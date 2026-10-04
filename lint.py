@@ -95,7 +95,8 @@ SEARCH_PROVIDER_RESULT_KEYS = {"items", "entries"}
 # Kept in sync with the 2.5.4 loader's _validate_pricing_action
 # (celerp/modules/loader.py, not present in 2.5.3 and earlier), which refuses the
 # whole module when an entry breaks one of these rules.
-PRICING_ACTION_KEYS = {"label", "label_key", "href_template", "permission", "show_on", "presentation"}
+PRICING_ACTION_KEYS = {"label", "label_key", "href_template", "permission", "show_on", "presentation",
+                       "requires_connector"}
 PRICING_ACTION_PLACEHOLDERS = {"entity_id", "price_list", "field_name"}
 PLACEHOLDER_RE = re.compile(r"\{([^{}]*)\}")
 # item_action links follow the same link rules, with {entity_id} their only

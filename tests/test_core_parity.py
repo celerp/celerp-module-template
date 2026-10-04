@@ -235,7 +235,8 @@ class TestCoreParity(unittest.TestCase):
             cases += [_slot_case(slot, {**base, "href_template": h}) for h in hrefs]
             cases.append(_slot_case(slot, {"label": "L"}))
             cases += [_slot_case(slot, {**base, key: "x"})
-                      for key in ("extra", "icon", "show_on", "presentation", "label_key")]
+                      for key in ("extra", "icon", "show_on", "presentation", "label_key",
+                                  "requires_connector")]
             cases += [_slot_case(slot, {**base, 1: "x"})]
         base = _base("pricing_action")
         cases += [_slot_case("pricing_action", {**base, "show_on": s}) for s in show_on]
