@@ -105,7 +105,8 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    or breaks on, and parts of the manifest Celerp ignores (an unknown key or slot
    name, usually a typo). It exits 1 on either. Rename the folder and the
    manifest `name` together: Celerp installs a module under its manifest name
-   whatever the folder is called, and lint says so if the two drift apart.
+   whatever the folder is called, from 2.5.4 it will not load a module whose
+   folder and name differ, and lint says so if the two drift apart.
 
    `tests/test_core_parity.py` loads every case lint checks through Celerp's own
    loader and fails wherever the two disagree. Lint is stricter in a few places,
