@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import re
 import shutil
 import tempfile
 import unittest
@@ -612,6 +613,23 @@ class TestTablePrefixShape(unittest.TestCase):
     def test_migrations_without_prefix_flagged(self):
         problems = self._problems('"migrations": "thing.migrations",')
         self.assertTrue(any("migrations" in p for p in problems), problems)
+
+
+class TestAgentsCitations(unittest.TestCase):
+    """AGENTS.md backs each rule with a path:line. The ones in this repo must still
+    point at code, so an edit that moves a line moves the citation with it."""
+
+    def test_local_citations_land_on_code(self):
+        text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        cited = re.findall(r"`([\w./-]+\.py):(\d+)`", text)
+        local = [(path, int(line)) for path, line in cited if (ROOT / path).is_file()]
+        self.assertTrue(local)
+        for path, line in local:
+            with self.subTest(citation=f"{path}:{line}"):
+                lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
+                self.assertLessEqual(line, len(lines))
+                code = lines[line - 1].strip()
+                self.assertTrue(code and not code.startswith("#"), repr(code))
 
 
 def tearDownModule():
