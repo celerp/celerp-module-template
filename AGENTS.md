@@ -15,7 +15,7 @@ questions that come up next.
 element's `id`, so `HTMLResponse(str(Div(..., id="rows")))` sends the browser the
 five characters `rows`. Nothing raises and nothing is logged; the page region just
 goes blank or fills with a word. Core renders fragments through `to_xml` everywhere,
-and so does this module: `acme-maintenance/acme_maintenance/ui_routes.py:544`.
+and so does this module: `acme-maintenance/acme_maintenance/ui_routes.py:547`.
 
 **2. A module ships no CSS, so use classes that already exist.** There is no hook
 for a module stylesheet. A class core has never heard of renders unstyled, which is
@@ -117,7 +117,7 @@ fair game, and this module uses both.
 Three of these rules are enforced, so a mistake surfaces before a restart rather
 than in front of a user:
 
-- Rule 1 and rule 5 are checked by `lint.py:282` and `lint.py:123`. Run
+- Rule 1 and rule 5 are checked by `lint.py:306` and `lint.py:145`. Run
   `python lint.py acme-maintenance` (or your renamed folder) before every restart.
 - Rule 2 is checked by a test that renders every view and fails on any class core
   neither styles nor emits: `acme-maintenance/tests/test_render.py:328`.
