@@ -221,7 +221,10 @@ class TestSearchProviderSlot(unittest.TestCase):
     restart."""
 
     def _provider(self, entry: str) -> pathlib.Path:
-        return _module("acme-thing", extra=f'"slots": {{"search_provider": {entry}}},')
+        folder = _module("acme-thing", extra=f'"slots": {{"search_provider": {entry}}},')
+        (folder / "thing").mkdir()
+        (folder / "thing" / "search.py").write_text("async def go(q):\n    return []\n")
+        return folder
 
     def test_template_sample_search_provider_clean(self):
         self.assertEqual(lint.lint(MODULE), [])
@@ -285,12 +288,13 @@ class TestSearchProviderSlot(unittest.TestCase):
     def test_malformed_handler_syntax_flagged(self):
         # The core loader resolves the handler as exactly module:function: one
         # colon, a non-empty module path and a non-empty function name, no
-        # whitespace (celerp/modules/loader.py _prepare_search_provider). A
-        # handler that is a non-empty string but not that shape passes the old
-        # emptiness check yet fails to resolve at load, so lint.py must reject
-        # every malformed shape here, not just the empty one.
+        # whitespace (celerp/modules/loader.py _check_slot_callable), naming a
+        # function the module defines. A handler that is a non-empty string but
+        # not that shape fails to resolve at load, so lint.py must reject every
+        # malformed shape here, not just the empty one.
         for handler in ("run_query", "a:b:c", ":go", "thing.search:",
-                        "thing search:go", "thing.search: go"):
+                        "thing search:go", "thing.search: go", "thing.search:nothing",
+                        "thing..search:go"):
             with self.subTest(handler=handler):
                 folder = self._provider(
                     '{"handler": "%s", "result_key": "items", '
@@ -578,8 +582,9 @@ class TestManifestFieldTypes(unittest.TestCase):
             table_prefix="acme_", company_backup={}), [])
 
     def test_none_is_an_absent_optional_field(self):
-        # Celerp reads None the same as a missing key, except for table_prefix.
-        for field in sorted(lint.MANIFEST_KEYS - set(lint.REQUIRED_FIELDS) - {"table_prefix"}):
+        # Celerp reads None the same as a missing key, except for table_prefix and slots.
+        for field in sorted(lint.MANIFEST_KEYS - set(lint.REQUIRED_FIELDS)
+                            - {"table_prefix", "slots"}):
             with self.subTest(field=field):
                 self.assertEqual(self._problems(**{field: None}), [])
 
@@ -606,12 +611,187 @@ class TestTablePrefixShape(unittest.TestCase):
         for migrations in ("", '"migrations": "thing.migrations",'):
             with self.subTest(migrations=migrations):
                 self.assertEqual(self._problems(f'"table_prefix": None, {migrations}'),
-                                 ["table_prefix is None; set it to the prefix of the tables the "
-                                  "module owns, such as 'acme_', or leave it out"])
+                                 ["table_prefix must name the tables the module owns, such as "
+                                  "'acme_', or be left out"])
 
     def test_migrations_without_prefix_flagged(self):
         problems = self._problems('"migrations": "thing.migrations",')
         self.assertTrue(any("migrations" in p for p in problems), problems)
+
+
+HOOKS = (
+    "def sync_fn(*a):\n    return None\n\n\n"
+    "async def async_fn(*a):\n    return None\n\n\n"
+    "class Klass:\n    pass\n\n\n"
+    "lam = lambda *a: None\n"
+    "VALUE = 5\n"
+    "alias = async_fn\n"
+)
+
+
+def _slots_module(slots: dict, files: dict | None = None) -> pathlib.Path:
+    """acme-thing with `slots`, a thing/hooks.py of sample callables, and `files`."""
+    folder = _module("acme-thing", extra=f'"slots": {slots!r},')
+    for rel, text in {"thing/__init__.py": "", "thing/hooks.py": HOOKS, **(files or {})}.items():
+        (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+        (folder / rel).write_text(text, encoding="utf-8")
+    return folder
+
+
+def _problems(slots: dict, files: dict | None = None) -> list[str]:
+    return lint.check(_slots_module(slots, files))[0]
+
+
+class TestSlotEntryRules(unittest.TestCase):
+    """The rules the Celerp 2.5.4 loader applies to every slot entry, any slot."""
+
+    def test_permission_must_be_a_registry_key(self):
+        for key in ("permission", "write_permission"):
+            for value in ("view_inventory", "manage_labels"):
+                with self.subTest(key=key, value=value):
+                    self.assertEqual(_problems({"category_schema": [{key: value}]}), [])
+            for value in ("", None, False, 0, [], "admin", "View_Inventory", ["view_inventory"]):
+                with self.subTest(key=key, value=value):
+                    problems = _problems({"category_schema": [{key: value}]})
+                    self.assertTrue(any(key in p and "permission key" in p for p in problems),
+                                    problems)
+
+    def test_unknown_slot_entries_follow_the_rules_too(self):
+        problems = _problems({"settings_tab": [{"permission": "admin"}]})
+        self.assertTrue(any("permission key" in p for p in problems), problems)
+        self.assertEqual(_problems({"settings_tab": [{"permission": "view_inventory"}]}), [])
+
+    def test_requires_connector_is_a_connector_id_when_set(self):
+        for value in (None, "", 0, False, "shopify"):
+            with self.subTest(value=value):
+                self.assertEqual(_problems({"nav": [{"href": "/x", "requires_connector": value}]}),
+                                 [])
+        for value in (1, True, ["shopify"], {"a": 1}):
+            with self.subTest(value=value):
+                problems = _problems({"nav": [{"href": "/x", "requires_connector": value}]})
+                self.assertTrue(any("requires_connector" in p for p in problems), problems)
+
+    def test_destinations_stay_inside_celerp(self):
+        for slot, key in (("nav", "href"), ("nav", "settings_href"), ("bulk_action", "form_action")):
+            base = {"form_action": "/x"} if slot == "bulk_action" else {}
+            self.assertEqual(_problems({slot: [{**base, key: "/a/b?c=d"}]}), [], key)
+            for value in ("//evil.example", "https://x.example", "/\\evil", "x", "", None, 1):
+                with self.subTest(slot=slot, key=key, value=value):
+                    problems = _problems({slot: [{**base, key: value}]})
+                    self.assertTrue(any(key in p and "inside Celerp" in p for p in problems),
+                                    problems)
+
+    def test_bulk_action_needs_a_form_action(self):
+        problems = _problems({"bulk_action": [{"label": "Ship"}]})
+        self.assertTrue(any("needs a form_action" in p for p in problems), problems)
+
+    def test_entries_are_dicts(self):
+        for contribution in (None, "x", 1, [None], [{}, 1]):
+            with self.subTest(contribution=contribution):
+                problems = _problems({"nav": contribution})
+                self.assertTrue(any("must be a dict" in p for p in problems), problems)
+        self.assertEqual(_problems({"nav": []}), [])
+
+    def test_projection_handler_needs_a_prefix(self):
+        for prefix in (None, "", 1, ["acme."]):
+            with self.subTest(prefix=prefix):
+                problems = _problems({"projection_handler": [
+                    {"handler": "thing.hooks:sync_fn", "prefix": prefix}]})
+                self.assertTrue(any("needs a prefix" in p for p in problems), problems)
+        self.assertEqual(_problems({"projection_handler": [
+            {"handler": "thing.hooks:sync_fn", "prefix": "acme."}]}), [])
+
+
+class TestCallableSlots(unittest.TestCase):
+    """A callable slot names a function in the module's own files, async exactly
+    where Celerp awaits it."""
+
+    def _one(self, slot: str, dotted, files: dict | None = None) -> list[str]:
+        key, _ = lint.CALLABLE_SLOTS[slot]
+        entry = {key: dotted, "result_key": "items", "permission": "view_inventory"} \
+            if slot == "search_provider" else {key: dotted, "prefix": "acme."}
+        return _problems({slot: entry if slot == "search_provider" else [entry]}, files)
+
+    def test_async_exactly_where_awaited(self):
+        for slot, (key, awaited) in sorted(lint.CALLABLE_SLOTS.items()):
+            for name, is_async in (("sync_fn", False), ("async_fn", True), ("Klass", False),
+                                   ("lam", False), ("alias", True)):
+                with self.subTest(slot=slot, name=name):
+                    problems = self._one(slot, f"thing.hooks:{name}")
+                    if is_async == awaited:
+                        self.assertEqual(problems, [])
+                    else:
+                        self.assertTrue(any("async" in p for p in problems), problems)
+
+    def test_the_code_must_be_the_modules_own(self):
+        files = {
+            "thing/reexport.py": "from .hooks import sync_fn\nfrom thing.hooks import async_fn\n",
+            "thing/foreign.py": "from os.path import join as sync_fn\n",
+            "thing/broken.py": "def sync_fn(:\n",
+            "thing/deco.py": "import functools\n\n\n@functools.lru_cache\ndef sync_fn():\n    pass\n",
+            "thing/star.py": "from .hooks import *\n",
+            "thing/nested.py": "if True:\n    def sync_fn():\n        pass\n",
+            "celerp/__init__.py": "",
+            "json.py": "def dumps(*a):\n    return ''\n",
+        }
+        self.assertEqual(self._one("doc_detail_actions", "thing.reexport:sync_fn", files), [])
+        self.assertEqual(self._one("on_modules_ready", "thing.reexport:async_fn", files), [])
+        for dotted in ("thing.foreign:sync_fn", "thing.broken:sync_fn", "thing.deco:sync_fn",
+                       "thing.star:sync_fn", "thing.nested:sync_fn", "thing.hooks:missing",
+                       "thing.hooks:VALUE", "thing.nope:sync_fn", "json:dumps",
+                       "celerp.services.app_paths:is_app_local_path", "thing.hooks.sync_fn",
+                       "thing.hooks:sync_fn:x", "", None, 5):
+            with self.subTest(dotted=dotted):
+                self.assertTrue(self._one("doc_detail_actions", dotted, files))
+
+    def test_search_provider_handler_is_a_callable_slot(self):
+        problems = self._one("search_provider", "thing.hooks:sync_fn")
+        self.assertTrue(any("must be async" in p for p in problems), problems)
+
+
+class TestReservedTables(unittest.TestCase):
+    """table_prefix may not claim a table Celerp reserves, a first-party module's
+    included, whether or not that module is turned on."""
+
+    def test_reserved_prefixes_refused(self):
+        for prefix in ("label_", "marketplace_", "bank_", "alembic_", "instance_", "user_",
+                       "sync_", "ai_", "work_"):
+            with self.subTest(prefix=prefix):
+                problems = lint.check(_module("acme-thing", extra=f'"table_prefix": {prefix!r},'))[0]
+                self.assertTrue(any("claims Celerp's table" in p for p in problems), problems)
+
+    def test_own_prefix_clean(self):
+        for prefix in ("acme_", "labelz_", "banking_", "accounts_"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(
+                    lint.check(_module("acme-thing", extra=f'"table_prefix": {prefix!r},'))[0], [])
+
+
+class TestFindingKinds(unittest.TestCase):
+    """A problem is something Celerp refuses or breaks on; an ignored finding is a
+    part it reads straight past. Both fail the command line."""
+
+    def test_split(self):
+        problems, ignored = lint.check(_module(
+            "acme-thing", extra='"slots": {"nav_items": [], "nav": [{"href": "//x"}]},'))
+        self.assertTrue(any("nav_items" in p for p in ignored), ignored)
+        self.assertFalse(any("nav_items" in p for p in problems), problems)
+        self.assertTrue(any("href" in p for p in problems), problems)
+
+    def test_empty_slots_value_that_is_not_a_dict_is_a_problem(self):
+        for value in ("[]", "None", "0", '""'):
+            with self.subTest(value=value):
+                problems = lint.check(_module("acme-thing", extra=f'"slots": {value},'))[0]
+                self.assertTrue(any(p.startswith("slots ") for p in problems), problems)
+
+    def test_cli_exits_1_on_ignored_findings_alone(self):
+        import subprocess
+        import sys
+        folder = _module("acme-thing", extra='"slots": {"nav_items": []},')
+        run = subprocess.run([sys.executable, str(ROOT / "lint.py"), str(folder)],
+                             capture_output=True, text=True)
+        self.assertEqual(run.returncode, 1, run.stdout)
+        self.assertIn("Celerp ignores", run.stdout)
 
 
 def tearDownModule():
