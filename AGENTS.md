@@ -153,3 +153,33 @@ than in front of a user:
 Everything else is checked by the module's own test suite, which runs against a real
 SQLite database and the real API app with nothing mocked in between. Start there
 when you change behaviour: write the test that fails first.
+
+## Citation anchors
+
+Each `path:line` above, with the exact text of that line. Paths under `celerp/` and `ui/` are in Celerp 2.5.4. When code moves, the test that checks these fails, and both the citation and its anchor are updated together.
+
+- `acme-maintenance/acme_maintenance/routes.py:54`: `require_permission("view_inventory")])`
+- `acme-maintenance/acme_maintenance/ui_routes.py:547`: `return HTMLResponse(to_xml(block),`
+- `acme-maintenance/tests/test_render.py:328`: `def test_all_emitted_classes_exist_in_core_css(env):`
+- `celerp/main.py:298`: `await conn.run_sync(Base.metadata.create_all)`
+- `celerp/modules/importer.py:203`: `def reserved_tables(name: str) -> frozenset[str]:`
+- `celerp/modules/importer.py:277`: `def table_prefix_problem(name: str, prefix: object,`
+- `celerp/modules/loader.py:1009`: `route_mod_path = manifest.get(manifest_key)`
+- `celerp/modules/loader.py:1376`: `def _validate_slot_entry(slot: str, item) -> None:`
+- `celerp/modules/loader.py:1392`: `if key in item and not is_permission_key(item[key]):`
+- `celerp/modules/loader.py:1453`: `def _check_slot_callable(`
+- `celerp/modules/loader.py:58`: `_PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({`
+- `celerp/modules/migrations_runner.py:171`: `async def run_migration_phase(engine, enabled):`
+- `celerp/services/app_paths.py:12`: `def is_app_local_path(path) -> bool:`
+- `celerp/services/permissions.py:54`: `PERMISSIONS: list[Permission] = [`
+- `lint.py:194`: `def _protected_imports(py_file: Path) -> set[str]:`
+- `lint.py:241`: `def _ignored_parts(manifest: dict) -> list[str]:`
+- `lint.py:392`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:541`: `def _str_rendered_fragments(py_file: Path) -> list[str]:`
+- `lint.py:620`: `def _table_prefix_problems(manifest: dict) -> list[str]:`
+- `ui/components/files.py:72`: `def files_section(`
+- `ui/components/shell.py:2238`: `def _allowed(item: dict) -> bool:`
+- `ui/components/shell.py:2442`: `def page_header(title: str, *actions: FT) -> FT:`
+- `ui/components/table.py:1145`: `def display_cell(`
+- `ui/components/table.py:923`: `def editable_cell(`
+- `ui/routes/inventory.py:2457`: `edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()`
