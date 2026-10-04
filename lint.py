@@ -48,12 +48,11 @@ PROTECTED = {
 }
 REQUIRED_FIELDS = ("name", "version", "display_name", "license")
 # Every top-level field Celerp reads out of a manifest, and the one type it reads
-# it as (celerp/modules/loader.py, importer.py, migrations_runner.py). Any other
-# type breaks in core rather than being refused: a depends_on string is iterated
-# letter by letter, a migrations number has no .split(). None is the same as
-# leaving the field out, which is how Celerp reads it, except for two fields:
-# Celerp checks a declared table_prefix whatever its value, and its 2.5.4 loader
-# breaks on a slots value that is empty but not a dict (None, [], "", 0).
+# it as (celerp/modules/loader.py, importer.py, migrations_runner.py). Lint refuses
+# any other type; Celerp refuses some (a slots list, a depends_on string) and
+# breaks on others (a migrations number has no .split()). None is the same as
+# leaving the field out, which is how Celerp reads it, except for table_prefix:
+# Celerp checks a declared table_prefix whatever its value.
 # depends_on is a list of strings.
 MANIFEST_FIELD_TYPES = {
     **dict.fromkeys(("name", "version", "display_name", "label", "description", "license",
@@ -214,10 +213,8 @@ def _type_problem(field, value) -> str | None:
     """Why `value` cannot be manifest field `field`, or None when it can (or when
     `field` is not one Celerp reads; _ignored_parts names those)."""
     expected = MANIFEST_FIELD_TYPES.get(field) if isinstance(field, str) else None
-    if expected is None or (value is None and field != "slots"):
+    if expected is None or value is None:
         return None
-    if value is None:
-        return "slots is None; leave it out, or give it a dict of slot entries"
     if not isinstance(value, expected):
         return f"{field} must be {TYPE_NAMES[expected]}, not {type(value).__name__}"
     if expected is list:
@@ -234,8 +231,9 @@ def _unknown(mapping: dict, known: set[str]) -> list:
 
 
 def _slots(manifest: dict) -> dict:
-    """The slots dict (lint() has already dropped a slots value of the wrong type)."""
-    return manifest.get("slots", {})
+    """The slots dict (lint() has already dropped a slots value of the wrong type,
+    and None is the same as no slots)."""
+    return manifest.get("slots") or {}
 
 
 def _ignored_parts(manifest: dict) -> list[str]:

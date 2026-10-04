@@ -582,9 +582,8 @@ class TestManifestFieldTypes(unittest.TestCase):
             table_prefix="acme_", company_backup={}), [])
 
     def test_none_is_an_absent_optional_field(self):
-        # Celerp reads None the same as a missing key, except for table_prefix and slots.
-        for field in sorted(lint.MANIFEST_KEYS - set(lint.REQUIRED_FIELDS)
-                            - {"table_prefix", "slots"}):
+        # Celerp reads None the same as a missing key, except for table_prefix.
+        for field in sorted(lint.MANIFEST_KEYS - set(lint.REQUIRED_FIELDS) - {"table_prefix"}):
             with self.subTest(field=field):
                 self.assertEqual(self._problems(**{field: None}), [])
 
@@ -779,7 +778,7 @@ class TestFindingKinds(unittest.TestCase):
         self.assertTrue(any("href" in p for p in problems), problems)
 
     def test_empty_slots_value_that_is_not_a_dict_is_a_problem(self):
-        for value in ("[]", "None", "0", '""'):
+        for value in ("[]", "0", '""'):
             with self.subTest(value=value):
                 problems = lint.check(_module("acme-thing", extra=f'"slots": {value},'))[0]
                 self.assertTrue(any(p.startswith("slots ") for p in problems), problems)
