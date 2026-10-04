@@ -46,6 +46,7 @@ acme-maintenance/               the module (copy and rename this whole folder)
     test_module.py              manifest shape and domain logic, no app needed
     htmlq.py                    a small HTML query helper for the render tests
 tests/test_lint.py              tests for lint.py itself
+tests/test_core_parity.py       lint.py against Celerp's own checks (needs Celerp 2.5.4)
 lint.py                         check a module without installing the app
 .github/workflows/ci.yml        both suites on every push
 ```

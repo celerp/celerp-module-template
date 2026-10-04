@@ -39,3 +39,7 @@ jobs:
       - run: pytest acme-maintenance/tests -n auto
         env:
           PYTHONPATH: ${{ github.workspace }}/celerp:${{ github.workspace }}/acme-maintenance
+      # lint.py's copies of Celerp's manifest rules, held to the originals.
+      - run: pytest tests/test_core_parity.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}/celerp
