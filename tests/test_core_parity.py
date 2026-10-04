@@ -62,6 +62,13 @@ HOOKS = (
     "class Klass:\n    pass\n\n\n"
     "lam = lambda *args, **kwargs: None\n"
     "VALUE = 5\n"
+    "async def item_lineage_guard(*, session, entry, transition):\n    return None\n\n\n"
+    "async def inventory_in_production(*, session, company_id):\n    return 0\n"
+)
+# Handler signatures for the slots Celerp calls with keyword arguments only.
+SIGNATURES = (
+    "*, {kw}", "{kw}", "{rev}", "*, {kw}, extra=None", "*, {kw}, **more", "*args, {kw}",
+    "{kw}, /", "*, {short}", "*, db, {short}", "*a, **k", "", "{kw}, *, more",
 )
 
 
@@ -106,7 +113,9 @@ def _base(slot: str) -> dict:
         "catalog_channel": {"label": "L", "id": "shop"},
         "search_provider": {"result_key": "items", "permission": "view_inventory"},
     }.get(slot, {"label": "L"})
-    if slot in lint.CALLABLE_SLOTS:
+    if slot in lint.HANDLER_KEYWORDS:
+        entry = {**entry, "handler": "{pkg}.hooks:" + slot}
+    elif slot in lint.CALLABLE_SLOTS:
         key, awaited = lint.CALLABLE_SLOTS[slot]
         entry = {**entry, key: "{pkg}.hooks:" + ("async_fn" if awaited else "sync_fn")}
     return entry
@@ -402,6 +411,42 @@ class TestCoreParity(unittest.TestCase):
             cases.append(case(f"{{pkg}}:{fn}", {"{pkg}/__init__.py": f"from .hooks import {fn}\n"}))
         self.assertParity(cases)
 
+    def test_handler_keywords(self):
+        """inventory_in_production and item_lineage_guard: Celerp awaits the handler
+        with exactly its keyword arguments, so a handler taking any other set, any
+        positional-only one, or *args or **kwargs is refused; so is a sync one."""
+        cases = []
+        for slot, keywords in sorted(lint.HANDLER_KEYWORDS.items()):
+            kw = ", ".join(keywords)
+            fills = {"kw": kw, "rev": ", ".join(reversed(keywords)),
+                     "short": ", ".join(keywords[:-1])}
+            for n, params in enumerate(SIGNATURES):
+                for prefix in ("async ", ""):
+                    text = f"{prefix}def handler(" + params.format(**fills) + "):\n    return None\n"
+                    cases.append(_slot_case(slot, {"handler": "{pkg}.sig:handler"},
+                                            {"{pkg}/sig.py": text}))
+            cases.append(_slot_case(slot, {"handler": "{pkg}.sig:handler"},
+                                    {"{pkg}/sig.py": f"handler = lambda *, {kw}: None\n"}))
+            cases.append(_slot_case(slot, {"handler": "{pkg}.reexport:handler"}, {
+                "{pkg}/sig.py": f"async def handler(*, {kw}):\n    return None\n",
+                "{pkg}/reexport.py": "from .sig import handler\n"}))
+            cases.append(_slot_case(slot, {"handler": "{pkg}.sig:alias"}, {
+                "{pkg}/sig.py": f"async def handler({kw}, more):\n    return None\n\n\nalias = handler\n"}))
+        self.assertParity(cases)
+
+    def test_chart_of_accounts_is_not_a_slot(self):
+        """The chart of accounts is the bundled accounting module's alone. A module
+        filling these names loads, and neither Celerp nor lint.py reads them."""
+        names = ("journal_accounts", "chart_accounts", "add_chart_account")
+        self.assertFalse(set(names) & slots.SLOT_NAMES)
+        self.assertFalse(set(names) & lint.SLOT_NAMES)
+        cases = [_slot_case(name, {"handler": "{pkg}.hooks:async_fn"}) for name in names]
+        cases.append(_slot_case("chart_accounts", {"permission": "admin"}))
+        self.assertParity(cases)
+        for case in cases[:-1]:
+            folder, _ = self._write(case, flat=False)
+            self.assertTrue(any("unknown slot" in p for p in lint.check(folder)[1]))
+
     def test_module_name(self):
         """The name Celerp admits a module under: its characters, its length, and the
         reserved celerp- prefix."""
@@ -569,6 +614,7 @@ class TestCoreParity(unittest.TestCase):
         self.assertEqual(lint.RESERVED_IMPORT_NAMES, loader._RESERVED_IMPORT_NAMES)
         self.assertEqual(lint.RESERVED_IMPORT_PREFIX, loader._RESERVED_IMPORT_PREFIX)
         self.assertEqual(set(lint.SLOT_CHECKS), set(loader._SLOT_VALIDATORS))
+        self.assertEqual(lint.HANDLER_KEYWORDS, loader._HANDLER_KEYWORDS)
         # Every slot a core rule names is a slot lint knows.
         named = set(loader._CALLABLE_SLOTS) | set(loader._DESTINATION_KEYS) | set(loader._SLOT_VALIDATORS)
         self.assertLessEqual(named, lint.SLOT_NAMES)

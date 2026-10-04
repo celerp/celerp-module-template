@@ -90,7 +90,7 @@ SLOT_NAMES = {
     "nav", "search_provider", "bulk_action", "item_action", "doc_detail_actions",
     "doc_detail_badges", "category_schema", "on_company_created", "on_modules_ready",
     "send_to_targets", "catalog_channel", "projection_handler", "pricing_action",
-    "doc_finalize_hook", "on_doc_payment",
+    "doc_finalize_hook", "on_doc_payment", "inventory_in_production", "item_lineage_guard",
 }
 # How each table a module owns travels with a company backup.
 COMPANY_BACKUP_VALUES = {"include", "exclude"}
@@ -175,6 +175,15 @@ CALLABLE_SLOTS = {
     "doc_finalize_hook": ("handler", True),
     "on_doc_payment": ("handler", True),
     "projection_handler": ("handler", False),
+    "inventory_in_production": ("handler", True),
+    "item_lineage_guard": ("handler", True),
+}
+# Callable slots Celerp calls with keyword arguments only, and those arguments. The
+# handler takes exactly these: no other parameter, none positional-only, and no
+# *args or **kwargs (the loader's _HANDLER_KEYWORDS).
+HANDLER_KEYWORDS = {
+    "inventory_in_production": ("session", "company_id"),
+    "item_lineage_guard": ("session", "entry", "transition"),
 }
 # Package names Celerp keeps for itself, and the prefix of its own modules' packages.
 RESERVED_IMPORT_NAMES = frozenset({"celerp", "ui", "default_modules", "premium_modules"})
@@ -210,6 +219,8 @@ SLOT_ENTRY_KEYS = {
     "on_modules_ready": {},
     "doc_finalize_hook": {},
     "on_doc_payment": {},
+    "inventory_in_production": {},
+    "item_lineage_guard": {},
 }
 ENTRY_TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
                     list: "a list", type(None): "None"}
@@ -353,12 +364,12 @@ def _href_template_problems(where: str, item: dict, placeholders: set[str]) -> l
     return problems
 
 
-def _item_action_problems(where: str, item: dict) -> list[str]:
+def _item_action_problems(where: str, item: dict, folder: Path) -> list[str]:
     """The 2.5.4 loader's _validate_item_action, for one entry."""
     return _href_template_problems(where, item, ITEM_ACTION_PLACEHOLDERS)
 
 
-def _pricing_action_problems(where: str, item: dict) -> list[str]:
+def _pricing_action_problems(where: str, item: dict, folder: Path) -> list[str]:
     """The 2.5.4 loader's _validate_pricing_action, for one entry."""
     traits = {trait for pair in PRICING_ROW_TRAIT_PAIRS for trait in pair}
     problems = []
@@ -381,7 +392,7 @@ def _pricing_action_problems(where: str, item: dict) -> list[str]:
     return problems
 
 
-def _bulk_action_problems(where: str, item: dict) -> list[str]:
+def _bulk_action_problems(where: str, item: dict, folder: Path) -> list[str]:
     """The loader's _validate_bulk_action, for one entry."""
     if item.get("action_type", "htmx") not in BULK_ACTION_TYPES:
         return [f"{where} action_type must be one of {sorted(BULK_ACTION_TYPES)}, "
@@ -389,7 +400,7 @@ def _bulk_action_problems(where: str, item: dict) -> list[str]:
     return []
 
 
-def _category_schema_problems(where: str, item: dict) -> list[str]:
+def _category_schema_problems(where: str, item: dict, folder: Path) -> list[str]:
     """The loader's _validate_category_schema, for one entry."""
     return [f"{where} fields must be field definitions: a dict with a text key, and text "
             f"label and type and a list of options where given, not {field!r}"
@@ -400,12 +411,37 @@ def _category_schema_problems(where: str, item: dict) -> list[str]:
                    for k, types in CATEGORY_FIELD_KEYS.items() if k in field)]
 
 
-# Per-slot checks beyond the generic entry rules (the loader's _SLOT_VALIDATORS).
+def _keyword_check(slot: str):
+    """The check for a slot in HANDLER_KEYWORDS: the handler's def takes exactly the
+    slot's keyword arguments (the loader's _keyword_validator). A handler lint.py
+    cannot follow to its def is already refused by _callable_problems."""
+    keywords = HANDLER_KEYWORDS[slot]
+
+    def check(where: str, item: dict, folder: Path) -> list[str]:
+        node, _ = _callable_node(folder, item.get("handler"))
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or _takes_exactly(node, keywords):
+            return []
+        return [f"{where} handler {item['handler']!r} must take exactly the keyword arguments "
+                f"{', '.join(keywords)}; Celerp calls it with those and nothing else"]
+    return check
+
+
+def _takes_exactly(node: ast.FunctionDef | ast.AsyncFunctionDef, keywords: tuple[str, ...]) -> bool:
+    """Whether the def can be called with exactly `keywords` as keyword arguments and
+    nothing else: no positional-only parameter, no *args or **kwargs, no other name."""
+    a = node.args
+    return (not a.posonlyargs and a.vararg is None and a.kwarg is None
+            and sorted(p.arg for p in a.args + a.kwonlyargs) == sorted(keywords))
+
+
+# Per-slot checks beyond the generic entry rules (the loader's _SLOT_VALIDATORS),
+# each called as check(where, item, folder).
 SLOT_CHECKS = {
     "item_action": _item_action_problems,
     "pricing_action": _pricing_action_problems,
     "bulk_action": _bulk_action_problems,
     "category_schema": _category_schema_problems,
+    **{slot: _keyword_check(slot) for slot in HANDLER_KEYWORDS},
 }
 
 
@@ -489,7 +525,7 @@ def _slot_problems(manifest: dict, folder: Path) -> list[str]:
                 key, awaited = CALLABLE_SLOTS[slot]
                 problems += _callable_problems(f"{where} {key}", folder, item.get(key), awaited)
             if slot in SLOT_CHECKS:
-                problems += SLOT_CHECKS[slot](where, item)
+                problems += SLOT_CHECKS[slot](where, item, folder)
     return problems
 
 
@@ -544,9 +580,10 @@ def _binds(node: ast.AST, name: str) -> bool:
     return any(_binds(child, name) for child in ast.iter_child_nodes(node))
 
 
-def _callable_kind(folder: Path, top: str, source: Path, name: str,
-                   seen: set) -> tuple[str | None, str | None]:
-    """("async" or "sync", None) for the callable `name` in `source`, or (None, why)."""
+def _source_callable(folder: Path, top: str, source: Path, name: str,
+                     seen: set) -> tuple[ast.AST | None, str | None]:
+    """(the def, async def, class or lambda the callable `name` in `source` is, None),
+    or (None, why)."""
     if (source, name) in seen:
         return None, "is defined in a circle of imports"
     if not _inside(source, folder):
@@ -563,15 +600,15 @@ def _callable_kind(folder: Path, top: str, source: Path, name: str,
         return None, "is not defined there"
     if isinstance(binding, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         if binding.name == name and not binding.decorator_list:
-            return ("async" if isinstance(binding, ast.AsyncFunctionDef) else "sync"), None
+            return binding, None
     elif isinstance(binding, (ast.Assign, ast.AnnAssign)):
         targets = binding.targets if isinstance(binding, ast.Assign) else [binding.target]
         if (len(targets) == 1 and isinstance(targets[0], ast.Name)
                 and targets[0].id == name):
             if isinstance(binding.value, ast.Lambda):
-                return "sync", None
+                return binding.value, None
             if isinstance(binding.value, ast.Name):
-                return _callable_kind(folder, top, source, binding.value.id, seen)
+                return _source_callable(folder, top, source, binding.value.id, seen)
     elif isinstance(binding, ast.ImportFrom):
         alias = next((a for a in binding.names if (a.asname or a.name) == name), None)
         if alias is not None:
@@ -593,33 +630,42 @@ def _callable_kind(folder: Path, top: str, source: Path, name: str,
                 return None, f"is imported from {binding.module!r}, outside the module"
             if target is None:
                 return None, "is imported from a file the module does not have"
-            return _callable_kind(folder, top, target, alias.name, seen)
+            return _source_callable(folder, top, target, alias.name, seen)
     return None, ("cannot be followed to a def, async def, class or lambda in the module's "
                   "own files without running it")
+
+
+def _callable_node(folder: Path, dotted) -> tuple[ast.AST | None, str | None]:
+    """(the def, async def, class or lambda `dotted` names in the module's own files,
+    None), or (None, why Celerp would refuse it) (the loader's _owned_callable_source
+    and _source_callable)."""
+    if not (isinstance(dotted, str) and dotted.count(":") == 1 and all(dotted.split(":"))):
+        return None, f"{dotted!r} must be 'module.path:function'"
+    module_path, name = dotted.split(":")
+    top = module_path.split(".")[0]
+    if not all(module_path.split(".")):
+        return None, f"{dotted!r} has an empty part in its module path"
+    if top in TAKEN_PACKAGE_NAMES or top.startswith(RESERVED_IMPORT_PREFIX):
+        return None, (f"{dotted!r}: the package name {top!r} belongs to Python or Celerp, "
+                      "so Celerp would import theirs, not this module's code")
+    source = _module_source_file(folder, module_path)
+    if source is None:
+        return None, f"{dotted!r} does not name a file inside this module"
+    pkg_dir = folder if folder.name == top else folder / top
+    for init in [source, *(p / "__init__.py" for p in source.parents if p.is_relative_to(pkg_dir))]:
+        if init.exists() and _parsed(init) is None:
+            return None, f"{dotted!r}: {init.relative_to(folder)} does not parse"
+    node, why = _source_callable(folder, top, source, name, set())
+    return node, None if node is not None else f"{dotted!r} {why}"
 
 
 def _callable_problems(where: str, folder: Path, dotted, awaited: bool) -> list[str]:
     """Why Celerp would refuse `dotted` as the callable of a slot whose call it
     awaits (`awaited`) or makes plainly (the loader's _check_slot_callable)."""
-    if not (isinstance(dotted, str) and dotted.count(":") == 1 and all(dotted.split(":"))):
-        return [f"{where} {dotted!r} must be 'module.path:function'"]
-    module_path, name = dotted.split(":")
-    top = module_path.split(".")[0]
-    if not all(module_path.split(".")):
-        return [f"{where} {dotted!r} has an empty part in its module path"]
-    if top in TAKEN_PACKAGE_NAMES or top.startswith(RESERVED_IMPORT_PREFIX):
-        return [f"{where} {dotted!r}: the package name {top!r} belongs to Python or Celerp, "
-                "so Celerp would import theirs, not this module's code"]
-    source = _module_source_file(folder, module_path)
-    if source is None:
-        return [f"{where} {dotted!r} does not name a file inside this module"]
-    pkg_dir = folder if folder.name == top else folder / top
-    for init in [source, *(p / "__init__.py" for p in source.parents if p.is_relative_to(pkg_dir))]:
-        if init.exists() and _parsed(init) is None:
-            return [f"{where} {dotted!r}: {init.relative_to(folder)} does not parse"]
-    kind, why = _callable_kind(folder, top, source, name, set())
-    if kind is None:
-        return [f"{where} {dotted!r} {why}"]
+    node, why = _callable_node(folder, dotted)
+    if node is None:
+        return [f"{where} {why}"]
+    kind = "async" if isinstance(node, ast.AsyncFunctionDef) else "sync"
     if awaited and kind != "async":
         return [f"{where} {dotted!r} must be async; Celerp awaits it"]
     if not awaited and kind == "async":

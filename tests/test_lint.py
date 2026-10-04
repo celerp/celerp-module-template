@@ -665,6 +665,8 @@ HOOKS = (
     "lam = lambda *a: None\n"
     "VALUE = 5\n"
     "alias = async_fn\n"
+    "async def lineage_guard(*, session, entry, transition):\n    return None\n\n\n"
+    "async def in_production(session, company_id):\n    return 0\n"
 )
 
 
@@ -756,7 +758,10 @@ class TestCallableSlots(unittest.TestCase):
         return _problems({slot: entry if slot == "search_provider" else [entry]}, files)
 
     def test_async_exactly_where_awaited(self):
+        # The keyword slots take exact arguments as well (TestHandlerKeywords).
         for slot, (key, awaited) in sorted(lint.CALLABLE_SLOTS.items()):
+            if slot in lint.HANDLER_KEYWORDS:
+                continue
             for name, is_async in (("sync_fn", False), ("async_fn", True), ("Klass", False),
                                    ("lam", False), ("alias", True)):
                 with self.subTest(slot=slot, name=name):
@@ -788,6 +793,94 @@ class TestCallableSlots(unittest.TestCase):
     def test_search_provider_handler_is_a_callable_slot(self):
         problems = self._one("search_provider", "thing.hooks:sync_fn")
         self.assertTrue(any("must be async" in p for p in problems), problems)
+
+
+class TestHandlerKeywords(unittest.TestCase):
+    """inventory_in_production and item_lineage_guard: Celerp awaits the handler with
+    exactly its keyword arguments, so the handler takes exactly those."""
+
+    FILES = {"thing/lineage.py": (
+        "async def guard(*, session, entry, transition):\n    return None\n\n\n"
+        "async def guard_plain(session, entry, transition):\n    return None\n\n\n"
+        "async def guard_default(*, session, entry, transition=None):\n    return None\n\n\n"
+        "async def in_production(*, session, company_id):\n    return 0\n\n\n"
+        "async def in_production_plain(company_id, session):\n    return 0\n\n\n"
+        "alias_guard = guard\n\n\n"
+        "def sync_guard(*, session, entry, transition):\n    return None\n\n\n"
+        "def sync_in_production(*, session, company_id):\n    return 0\n\n\n"
+        "async def short_guard(*, session, entry):\n    return None\n\n\n"
+        "async def loose_guard(*, session, entry, transition, **more):\n    return None\n\n\n"
+        "async def star_guard(*args, session, entry, transition):\n    return None\n\n\n"
+        "async def positional_guard(session, entry, transition, /):\n    return None\n\n\n"
+        "async def extra_guard(*, session, entry, transition, when=None):\n    return None\n\n\n"
+        "async def misnamed_in_production(*, db, company_id):\n    return 0\n\n\n"
+        "async def extra_in_production(*, session, company_id, when=None):\n    return 0\n\n\n"
+        "async def short_in_production(session):\n    return 0\n\n\n"
+        "def keep(fn):\n    return fn\n\n\n"
+        "built_guard = keep(guard)\n"
+        "lam_guard = lambda *, session, entry, transition: None\n"
+    ), "thing/reexport.py": "from .lineage import guard, in_production\n"}
+
+    def _one(self, slot: str, name: str) -> list[str]:
+        return _problems({slot: [{"handler": name}]}, self.FILES)
+
+    def test_contracts(self):
+        self.assertEqual(lint.HANDLER_KEYWORDS, {
+            "inventory_in_production": ("session", "company_id"),
+            "item_lineage_guard": ("session", "entry", "transition"),
+        })
+        for slot in lint.HANDLER_KEYWORDS:
+            self.assertEqual(lint.CALLABLE_SLOTS[slot], ("handler", True))
+            self.assertIn(slot, lint.SLOT_CHECKS)
+
+    def test_valid_fills_accepted(self):
+        for slot, name in (
+                ("item_lineage_guard", "thing.lineage:guard"),
+                ("item_lineage_guard", "thing.lineage:guard_plain"),
+                ("item_lineage_guard", "thing.lineage:guard_default"),
+                ("item_lineage_guard", "thing.lineage:alias_guard"),
+                ("item_lineage_guard", "thing.reexport:guard"),
+                ("inventory_in_production", "thing.lineage:in_production"),
+                ("inventory_in_production", "thing.lineage:in_production_plain"),
+                ("inventory_in_production", "thing.reexport:in_production")):
+            with self.subTest(slot=slot, name=name):
+                self.assertEqual(self._one(slot, name), [])
+
+    def test_wrong_shape_refused(self):
+        for slot, name, reason in (
+                ("item_lineage_guard", "thing.lineage:sync_guard", "must be async"),
+                ("inventory_in_production", "thing.lineage:sync_in_production", "must be async"),
+                ("item_lineage_guard", "thing.lineage:lam_guard", "must be async"),
+                ("item_lineage_guard", "thing.lineage:short_guard", "session, entry, transition"),
+                ("item_lineage_guard", "thing.lineage:loose_guard", "session, entry, transition"),
+                ("item_lineage_guard", "thing.lineage:star_guard", "session, entry, transition"),
+                ("item_lineage_guard", "thing.lineage:positional_guard",
+                 "session, entry, transition"),
+                ("item_lineage_guard", "thing.lineage:extra_guard", "session, entry, transition"),
+                ("item_lineage_guard", "thing.lineage:in_production", "session, entry, transition"),
+                ("inventory_in_production", "thing.lineage:guard", "session, company_id"),
+                ("inventory_in_production", "thing.lineage:misnamed_in_production",
+                 "session, company_id"),
+                ("inventory_in_production", "thing.lineage:extra_in_production",
+                 "session, company_id"),
+                ("inventory_in_production", "thing.lineage:short_in_production",
+                 "session, company_id"),
+                ("item_lineage_guard", "thing.lineage:built_guard", "cannot be followed")):
+            with self.subTest(slot=slot, name=name):
+                problems = self._one(slot, name)
+                self.assertTrue(any(reason in p for p in problems), problems)
+
+    def test_chart_of_accounts_names_are_unknown(self):
+        """The chart of accounts is the bundled accounting module's alone, not a slot:
+        a module that fills these names changes nothing, and lint.py says so."""
+        hooks = {"handler": "thing.hooks:async_fn"}
+        folder = _slots_module({name: [hooks] for name in
+                                ("journal_accounts", "chart_accounts", "add_chart_account")})
+        problems, ignored = lint.check(folder)
+        self.assertEqual(problems, [])
+        for name in ("journal_accounts", "chart_accounts", "add_chart_account"):
+            self.assertNotIn(name, lint.SLOT_NAMES)
+            self.assertTrue(any(f"unknown slot {name!r}" in p for p in ignored), ignored)
 
 
 class TestReservedTables(unittest.TestCase):
@@ -963,6 +1056,8 @@ VALID_ENTRIES = {
                         "show_on": ["sell"]}],
     "doc_finalize_hook": [{"handler": "thing.hooks:async_fn"}],
     "on_doc_payment": [{"handler": "thing.hooks:async_fn"}],
+    "item_lineage_guard": [{"handler": "thing.hooks:lineage_guard"}],
+    "inventory_in_production": [{"handler": "thing.hooks:in_production"}],
 }
 
 # Literals of every type a manifest can hold.

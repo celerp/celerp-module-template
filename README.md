@@ -222,8 +222,15 @@ whose slot entries break any of these:
   and `doc_detail_badges`) gives one `module:function` that resolves to a
   callable in your module's own files. It is an `async def` exactly where Celerp
   awaits it (`search_provider`, `on_company_created`, `on_modules_ready`,
-  `doc_finalize_hook`, `on_doc_payment`) and a plain (not async) callable
-  everywhere else.
+  `doc_finalize_hook`, `on_doc_payment`, `inventory_in_production`,
+  `item_lineage_guard`) and a plain (not async) callable everywhere else.
+- Celerp calls two handlers with keyword arguments only, so each takes exactly
+  these and no other parameter, none positional-only and no `*args` or
+  `**kwargs`: `inventory_in_production(session, company_id)` returns the stock
+  value issued to work still open that the books still carry on the inventory
+  accounts, and `item_lineage_guard(session, entry, transition)` runs on every
+  live item event, after it is applied and before its effects are booked, and
+  refuses the event by raising.
 
 Every top-level manifest field must also hold the one type Celerp reads it as;
 `python lint.py` reports each of these.
