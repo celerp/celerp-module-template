@@ -189,15 +189,27 @@ def test_viewer_cannot_touch_files(make_env):
     assert rm.status_code == 403
 
 
-def test_other_company_cannot_download(env, make_env):
-    """A44: a file id is not an access grant."""
+def test_second_company_sees_and_changes_nothing_of_the_first(env):
+    """A44: a second company, calling as itself, cannot read or change the first one's data.
+
+    `env.as_company` makes the same API app answer as the other company, so these are
+    the other company's own requests: its list is empty, and every id that belongs to
+    the first company is a 404, which is also what an id that never existed returns.
+    """
     eq = env.equipment("Lathe")
-    up = env.api.post(f"{API}/{eq}/files",
-                      files={"file": ("manual.txt", b"text", "text/plain")})
-    assert up.status_code == 200, up.text
-    fid = up.json()["id"]
-    intruder = env.equipment("Their lathe", company_id=env.other_company_id)
-    assert env.api.get(f"{API}/{intruder}/files/{fid}/download").status_code == 404
+    fid = env.api.post(f"{API}/{eq}/files",
+                       files={"file": ("manual.txt", b"text", "text/plain")}).json()["id"]
+    with env.as_company(env.other_company_id):
+        assert env.api.get(API).json()["items"] == []
+        assert env.api.get(f"{API}/{eq}").status_code == 404
+        assert env.api.get(f"{API}/{eq}/files/{fid}/download").status_code == 404
+        assert env.api.patch(f"{API}/{eq}/field/name", json={"value": "Taken"}).status_code == 404
+        assert env.api.post(f"{API}/{eq}/archive").status_code == 404
+        assert env.api.delete(f"{API}/{eq}/files/{fid}").status_code == 404
+    first = env.rows("acme_equipment")
+    assert [r["name"] for r in first] == ["Lathe"] and first[0]["archived_at"] is None
+    assert len(env.rows("acme_equipment_file")) == 1
+    assert env.api.get(f"{API}/{eq}/files/{fid}/download").status_code == 200
 
 
 def test_write_401_redirects_to_login(env):

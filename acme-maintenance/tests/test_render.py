@@ -264,6 +264,22 @@ def test_status_card_colours_known(env):
     assert "status-card--gray" not in markup, "a card colour fell through to grey"
 
 
+def test_empty_list_says_so(env):
+    """a company with no equipment sees the empty message, not a blank table or an error."""
+    markup = env.get("/maintenance").text
+    assert "No equipment yet" in markup
+    assert "could not be loaded" not in markup
+
+
+def test_list_shows_only_this_companys_equipment(env):
+    """the page a second company opens lists its own rows and none of the first's."""
+    env.equipment("Lathe")
+    with env.as_company(env.other_company_id):
+        markup = env.get("/maintenance").text
+    assert "Lathe" not in markup
+    assert "No equipment yet" in markup
+
+
 def test_api_failure_renders_error_state(env):
     """A27: an unreachable API says so; it never claims the list is empty."""
     env.inject["/api/maintenance/equipment"] = "raise"

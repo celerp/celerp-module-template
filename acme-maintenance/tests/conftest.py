@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 
 import httpx
@@ -88,7 +89,8 @@ class Env:
     """Everything a test needs to drive the module: client, db, and knobs."""
 
     def __init__(self, client: TestClient, api_client: TestClient, sync_engine,
-                 company_id, other_company_id, locations: list[dict], inject: dict) -> None:
+                 company_id, other_company_id, locations: list[dict], inject: dict,
+                 acting: dict) -> None:
         self.client = client
         self.api = api_client
         self.company_id = company_id
@@ -96,6 +98,17 @@ class Env:
         self.locations = locations
         self.inject = inject
         self._engine = sync_engine
+        self._acting = acting
+
+    @contextmanager
+    def as_company(self, company_id):
+        """Make every API call in the block as a user of another company."""
+        before = self._acting["company_id"]
+        self._acting["company_id"] = company_id
+        try:
+            yield
+        finally:
+            self._acting["company_id"] = before
 
     # -- database access, for asserting on rows the routes wrote --
 
@@ -233,6 +246,7 @@ def make_env(tmp_path, monkeypatch):
             {"id": str(uuid.uuid4()), "name": "Warehouse"},
         ]
         inject: dict = {}
+        acting = {"company_id": company_id}
 
         # Attachments land under a temp data_dir. LocalBackend._root reads
         # settings.data_dir on every call, so patching the setting is enough.
@@ -273,7 +287,7 @@ def make_env(tmp_path, monkeypatch):
 
         @api.get("/companies/me")
         async def _company_me():
-            return {"id": str(company_id), "name": "Acme Co", "slug": "acme",
+            return {"id": str(acting["company_id"]), "name": "Acme Co", "slug": "acme",
                     "currency": "THB", "settings": {}}
 
         @api.get("/companies/me/locations")
@@ -281,7 +295,7 @@ def make_env(tmp_path, monkeypatch):
             return {"items": locs, "total": len(locs)}
 
         api.dependency_overrides[get_session] = _session_override
-        api.dependency_overrides[get_current_company_id] = lambda: company_id
+        api.dependency_overrides[get_current_company_id] = lambda: acting["company_id"]
         api.dependency_overrides[get_current_role] = lambda: role
         api.dependency_overrides[get_current_user] = lambda: object()
 
@@ -314,7 +328,7 @@ def make_env(tmp_path, monkeypatch):
         client.cookies.set(COOKIE_NAME, _fake_token(company_id, role))
 
         return Env(client, TestClient(wrapped_api, base_url="http://api"), sync_engine,
-                   company_id, other_company_id, locs, inject)
+                   company_id, other_company_id, locs, inject, acting)
 
     return _make
 
