@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import re
 import shutil
 import tempfile
 import unittest
@@ -699,10 +700,10 @@ class TestSlotEntryRules(unittest.TestCase):
                     self.assertTrue(any(key in p and "permission key" in p for p in problems),
                                     problems)
 
-    def test_unknown_slot_entries_follow_the_rules_too(self):
+    def test_an_unknown_slot_is_named_once_and_its_entries_not_read(self):
         problems = _problems({"settings_tab": [{"permission": "admin"}]})
-        self.assertTrue(any("permission key" in p for p in problems), problems)
-        self.assertEqual(_problems({"settings_tab": [{"permission": "view_inventory"}]}), [])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("unknown slot 'settings_tab'", problems[0])
 
     def test_requires_connector_is_a_connector_id_when_set(self):
         for value in (None, "", "shopify"):
@@ -796,30 +797,25 @@ class TestCallableSlots(unittest.TestCase):
 
 
 class TestHandlerKeywords(unittest.TestCase):
-    """inventory_in_production and item_lineage_guard: Celerp awaits the handler with
-    exactly its keyword arguments, so the handler takes exactly those."""
+    """item_lineage_guard: Celerp awaits the handler with exactly its keyword
+    arguments, so the handler takes exactly those."""
 
     FILES = {"thing/lineage.py": (
         "async def guard(*, session, entry, transition):\n    return None\n\n\n"
         "async def guard_plain(session, entry, transition):\n    return None\n\n\n"
         "async def guard_default(*, session, entry, transition=None):\n    return None\n\n\n"
         "async def in_production(*, session, company_id):\n    return 0\n\n\n"
-        "async def in_production_plain(company_id, session):\n    return 0\n\n\n"
         "alias_guard = guard\n\n\n"
         "def sync_guard(*, session, entry, transition):\n    return None\n\n\n"
-        "def sync_in_production(*, session, company_id):\n    return 0\n\n\n"
         "async def short_guard(*, session, entry):\n    return None\n\n\n"
         "async def loose_guard(*, session, entry, transition, **more):\n    return None\n\n\n"
         "async def star_guard(*args, session, entry, transition):\n    return None\n\n\n"
         "async def positional_guard(session, entry, transition, /):\n    return None\n\n\n"
         "async def extra_guard(*, session, entry, transition, when=None):\n    return None\n\n\n"
-        "async def misnamed_in_production(*, db, company_id):\n    return 0\n\n\n"
-        "async def extra_in_production(*, session, company_id, when=None):\n    return 0\n\n\n"
-        "async def short_in_production(session):\n    return 0\n\n\n"
         "def keep(fn):\n    return fn\n\n\n"
         "built_guard = keep(guard)\n"
         "lam_guard = lambda *, session, entry, transition: None\n"
-    ), "thing/reexport.py": "from .lineage import guard, in_production\n"}
+    ), "thing/reexport.py": "from .lineage import guard\n"}
 
     def _one(self, slot: str, name: str) -> list[str]:
         return _problems({slot: [{"handler": name}]}, self.FILES)
@@ -839,17 +835,13 @@ class TestHandlerKeywords(unittest.TestCase):
                 ("item_lineage_guard", "thing.lineage:guard_plain"),
                 ("item_lineage_guard", "thing.lineage:guard_default"),
                 ("item_lineage_guard", "thing.lineage:alias_guard"),
-                ("item_lineage_guard", "thing.reexport:guard"),
-                ("inventory_in_production", "thing.lineage:in_production"),
-                ("inventory_in_production", "thing.lineage:in_production_plain"),
-                ("inventory_in_production", "thing.reexport:in_production")):
+                ("item_lineage_guard", "thing.reexport:guard")):
             with self.subTest(slot=slot, name=name):
                 self.assertEqual(self._one(slot, name), [])
 
     def test_wrong_shape_refused(self):
         for slot, name, reason in (
                 ("item_lineage_guard", "thing.lineage:sync_guard", "must be async"),
-                ("inventory_in_production", "thing.lineage:sync_in_production", "must be async"),
                 ("item_lineage_guard", "thing.lineage:lam_guard", "must be async"),
                 ("item_lineage_guard", "thing.lineage:short_guard", "session, entry, transition"),
                 ("item_lineage_guard", "thing.lineage:loose_guard", "session, entry, transition"),
@@ -858,13 +850,6 @@ class TestHandlerKeywords(unittest.TestCase):
                  "session, entry, transition"),
                 ("item_lineage_guard", "thing.lineage:extra_guard", "session, entry, transition"),
                 ("item_lineage_guard", "thing.lineage:in_production", "session, entry, transition"),
-                ("inventory_in_production", "thing.lineage:guard", "session, company_id"),
-                ("inventory_in_production", "thing.lineage:misnamed_in_production",
-                 "session, company_id"),
-                ("inventory_in_production", "thing.lineage:extra_in_production",
-                 "session, company_id"),
-                ("inventory_in_production", "thing.lineage:short_in_production",
-                 "session, company_id"),
                 ("item_lineage_guard", "thing.lineage:built_guard", "cannot be followed")):
             with self.subTest(slot=slot, name=name):
                 problems = self._one(slot, name)
@@ -872,15 +857,14 @@ class TestHandlerKeywords(unittest.TestCase):
 
     def test_chart_of_accounts_names_are_unknown(self):
         """The chart of accounts is the bundled accounting module's alone, not a slot:
-        a module that fills these names changes nothing, and lint.py says so."""
+        the loader refuses a module that fills these names, and lint.py says so."""
         hooks = {"handler": "thing.hooks:async_fn"}
         folder = _slots_module({name: [hooks] for name in
                                 ("journal_accounts", "chart_accounts", "add_chart_account")})
-        problems, ignored = lint.check(folder)
-        self.assertEqual(problems, [])
+        problems = lint.check(folder)[0]
         for name in ("journal_accounts", "chart_accounts", "add_chart_account"):
             self.assertNotIn(name, lint.SLOT_NAMES)
-            self.assertTrue(any(f"unknown slot {name!r}" in p for p in ignored), ignored)
+            self.assertTrue(any(f"unknown slot {name!r}" in p for p in problems), problems)
 
 
 class TestReservedTables(unittest.TestCase):
@@ -1014,9 +998,9 @@ class TestFindingKinds(unittest.TestCase):
 
     def test_split(self):
         problems, ignored = lint.check(_module(
-            "acme-thing", extra='"slots": {"nav_items": [], "nav": [{"href": "//x"}]},'))
-        self.assertTrue(any("nav_items" in p for p in ignored), ignored)
-        self.assertFalse(any("nav_items" in p for p in problems), problems)
+            "acme-thing", extra='"icon": "x", "slots": {"nav": [{"href": "//x"}]},'))
+        self.assertTrue(any("'icon'" in p for p in ignored), ignored)
+        self.assertFalse(any("'icon'" in p for p in problems), problems)
         self.assertTrue(any("href" in p for p in problems), problems)
 
     def test_empty_slots_value_that_is_not_a_dict_is_a_problem(self):
@@ -1028,11 +1012,34 @@ class TestFindingKinds(unittest.TestCase):
     def test_cli_exits_1_on_ignored_findings_alone(self):
         import subprocess
         import sys
-        folder = _module("acme-thing", extra='"slots": {"nav_items": []},')
+        folder = _module("acme-thing", extra='"icon": "x",')
         run = subprocess.run([sys.executable, str(ROOT / "lint.py"), str(folder)],
                              capture_output=True, text=True)
         self.assertEqual(run.returncode, 1, run.stdout)
         self.assertIn("Celerp ignores", run.stdout)
+
+
+class TestSlotNames(unittest.TestCase):
+    """The loader refuses a module that fills a slot Celerp does not read, and a slot
+    filled by Celerp's own modules only. The README lists the slots a module may fill."""
+
+    def test_an_unknown_slot_is_a_problem_the_loader_refuses(self):
+        problems, ignored = lint.check(_module("acme-thing", extra='"slots": {"nav_items": []},'))
+        self.assertTrue(any("unknown slot 'nav_items'" in p and "refuses" in p for p in problems),
+                        problems)
+        self.assertFalse(any("nav_items" in p for p in ignored), ignored)
+
+    def test_a_first_party_slot_is_refused(self):
+        problems = _problems({"inventory_in_production": [{"handler": "thing.hooks:async_fn"}]})
+        self.assertIn("Slot 'inventory_in_production' is filled by Celerp's own modules only.",
+                      problems)
+
+    def test_the_readme_lists_exactly_the_slots_a_module_may_fill(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        listing = readme.split("A module may fill these slots:", 1)[1].split(".", 1)[0]
+        self.assertEqual(set(re.findall(r"`(\w+)`", listing)), lint.PUBLIC_SLOTS)
+        self.assertEqual(lint.PUBLIC_SLOTS, lint.SLOT_NAMES - lint.FIRST_PARTY_SLOTS)
+        self.assertIn("inventory_in_production", lint.FIRST_PARTY_SLOTS)
 
 # One correct entry for every slot Celerp reads.
 VALID_ENTRIES = {
@@ -1081,7 +1088,7 @@ class TestEntryTypes(unittest.TestCase):
         self.assertEqual(set(VALID_ENTRIES), lint.SLOT_NAMES)
 
     def test_correct_entries_are_clean(self):
-        self.assertEqual(_problems(VALID_ENTRIES), [])
+        self.assertEqual(_problems({slot: VALID_ENTRIES[slot] for slot in lint.PUBLIC_SLOTS}), [])
 
     def test_wrong_types_refused(self):
         for slot, key, value in (

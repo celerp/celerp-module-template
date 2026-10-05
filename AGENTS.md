@@ -55,8 +55,10 @@ its own `setup_api_routes` or `setup_ui_routes` (`celerp/modules/loader.py:615`)
 manifest `name` must equal the module's folder name, start with a letter or digit, and
 hold only letters, digits, `-` and `_`, 64 characters at most
 (`celerp/modules/importer.py:74`). Every top-level manifest field must also hold the one type Celerp reads it as.
-`lint.py` reports an ignored key or slot as its own kind of finding, separate from
-a problem the loader refuses, and exits 1 on either.
+`lint.py` reports an ignored key as its own kind of finding, separate from a
+problem the loader refuses, and exits 1 on either. A slot name is not like a key:
+the loader refuses a module that fills a slot Celerp does not read, and `lint.py`
+reports it as a problem.
 
 The `search_provider` slot is the same discipline applied to a descriptor rather
 than a manifest. It contributes a read-only, company-scoped, permission-gated
@@ -85,7 +87,8 @@ key, carrying an unknown one, naming a `result_key` outside the two the
 aggregator reads, or a handler the loader would refuse.
 
 Every slot entry, in any slot, follows the same rules from Celerp 2.5.4
-(`celerp/modules/loader.py:1926`), and any module may fill any slot. Each entry is a
+(`celerp/modules/loader.py:1926`). A module may fill every slot in `lint.PUBLIC_SLOTS`;
+`inventory_in_production` is filled by Celerp's own modules only. Each entry is a
 dict, and carries what the code reading its slot takes from it, in the type it
 reads it as (`celerp/modules/loader.py:1896`): a `nav` `order` is a number, a
 `send_to_targets` entry names its `doc_type`, a `catalog_channel` its `id`, a
@@ -100,9 +103,8 @@ required, and `item_action` `href_template`) is a path inside Celerp: one leadin
 string. A slot that names code to run (its `handler`, or `render` for the
 `doc_detail_*` slots) gives one `module:function` that resolves to a callable in
 this module's own files, async exactly where Celerp awaits it (`celerp/modules/loader.py:2167`).
-The `inventory_in_production` and `item_lineage_guard` handlers are called with
-keyword arguments only, so each takes exactly `session, company_id` and
-`session, entry, transition` respectively: no other parameter, none
+The `item_lineage_guard` handler is called with keyword arguments only, so it
+takes exactly `session, entry, transition`: no other parameter, none
 positional-only, and no `*args` or `**kwargs` (`celerp/modules/loader.py:1791`).
 
 The tables a module creates must start with its `table_prefix`: at least 3
@@ -161,16 +163,16 @@ fair game, and this module uses both.
 Three of these rules are enforced, so a mistake surfaces before a restart rather
 than in front of a user:
 
-- Rule 1 and rule 5 are checked by `lint.py:722` and `lint.py:307`, the slot
-  and table rules above by `lint.py:509` and `lint.py:827`, the package name rule by
-  `lint.py:815`, and the route module and migrations rules by `lint.py:676` and
-  `lint.py:702`. `tests/test_core_parity.py`
+- Rule 1 and rule 5 are checked by `lint.py:730` and `lint.py:311`, the slot
+  and table rules above by `lint.py:510` and `lint.py:835`, the package name rule by
+  `lint.py:823`, and the route module and migrations rules by `lint.py:684` and
+  `lint.py:710`. `tests/test_core_parity.py`
   loads each case through Celerp's own loader and fails wherever lint and the loader
   disagree. Run
   `python lint.py acme-maintenance` (or your renamed folder) before every restart.
 - Rule 2 is checked by a test that renders every view and fails on any class core
   neither styles nor emits: `acme-maintenance/tests/test_render.py:344`.
-- The protected-import rule above is checked by `lint.py` as well (`lint.py:254`),
+- The protected-import rule above is checked by `lint.py` as well (`lint.py:258`),
   so you find out before a restart rather than from a module that will not load.
 - The citations in this file are checked too, so guidance that has drifted from the
   code fails a test instead of quietly misleading the next reader.
@@ -205,14 +207,14 @@ Each `path:line` above, with the exact text of that line. Paths under `celerp/` 
 - `celerp/modules/migrations_runner.py:167`: `async def run_migration_phase(engine, admission: loader.Admission) -> loader.Admission:`
 - `celerp/services/app_paths.py:12`: `def is_app_local_path(path) -> bool:`
 - `celerp/services/permissions.py:54`: `PERMISSIONS: list[Permission] = [`
-- `lint.py:254`: `def _protected_imports(py_file: Path) -> set[str]:`
-- `lint.py:307`: `def _ignored_parts(manifest: dict) -> list[str]:`
-- `lint.py:509`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:676`: `def _route_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:702`: `def _migrations_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:722`: `def _str_rendered_fragments(py_file: Path) -> list[str]:`
-- `lint.py:815`: `def _import_name_problems(folder: Path) -> list[str]:`
-- `lint.py:827`: `def _table_prefix_problems(manifest: dict) -> list[str]:`
+- `lint.py:258`: `def _protected_imports(py_file: Path) -> set[str]:`
+- `lint.py:311`: `def _ignored_parts(manifest: dict) -> list[str]:`
+- `lint.py:510`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:684`: `def _route_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:710`: `def _migrations_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:730`: `def _str_rendered_fragments(py_file: Path) -> list[str]:`
+- `lint.py:823`: `def _import_name_problems(folder: Path) -> list[str]:`
+- `lint.py:835`: `def _table_prefix_problems(manifest: dict) -> list[str]:`
 - `ui/components/files.py:72`: `def files_section(`
 - `ui/components/shell.py:2236`: `def _allowed(item: dict) -> bool:`
 - `ui/components/shell.py:2431`: `def page_header(title: str, *actions: FT) -> FT:`

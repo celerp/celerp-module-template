@@ -41,8 +41,9 @@ see other installed modules:
     that sends the browser a word where its markup should be
 
 Findings come in two kinds. A problem is something Celerp refuses, or breaks on,
-or a rule this repo holds modules to. An ignored finding is a part of the manifest
-Celerp reads straight past (an unknown key or slot name), which is usually a typo.
+or a rule this repo holds modules to (an unknown slot name is one: the loader
+refuses the module). An ignored finding is a part of the manifest Celerp reads
+straight past (an unknown key), which is usually a typo.
 
 Usage:  python lint.py path/to/your-module-folder
 Exit 0 = clean, 1 = findings (printed).
@@ -82,16 +83,19 @@ MANIFEST_FIELD_TYPES = {
 # open and nothing says a word.
 MANIFEST_KEYS = set(MANIFEST_FIELD_TYPES)
 TYPE_NAMES = {str: "a string", dict: "a dict", list: "a list of strings"}
-# Every slot core consumes (celerp/modules/slots.py). Any module may fill any of
-# them. A slot core does not read is still checked by the generic entry rules
-# at load time, then ignored, so a misspelled slot name ships an entry that never
-# appears.
+# Every slot core consumes (celerp/modules/slots.py). The loader refuses a module
+# that fills any other name, so a misspelled slot is a load failure.
 SLOT_NAMES = {
     "nav", "search_provider", "bulk_action", "item_action", "doc_detail_actions",
     "doc_detail_badges", "category_schema", "on_company_created", "on_modules_ready",
     "send_to_targets", "catalog_channel", "projection_handler", "pricing_action",
     "doc_finalize_hook", "on_doc_payment", "inventory_in_production", "item_lineage_guard",
 }
+# Slots whose answer the books are judged by: Celerp takes them from its own modules
+# only and refuses a module of anyone else's that fills one.
+FIRST_PARTY_SLOTS = {"inventory_in_production"}
+# The slots a module built from this template may fill.
+PUBLIC_SLOTS = SLOT_NAMES - FIRST_PARTY_SLOTS
 # How each table a module owns travels with a company backup.
 COMPANY_BACKUP_VALUES = {"include", "exclude"}
 # The keys a nav slot entry may carry (ui/components/shell.py builds the sidebar).
@@ -310,9 +314,6 @@ def _ignored_parts(manifest: dict) -> list[str]:
     for key in _unknown(manifest, MANIFEST_KEYS):
         problems.append(f"manifest has unknown key {key!r} - Celerp reads none of it, "
                         f"so it does nothing at load time")
-    for slot in _unknown(_slots(manifest), SLOT_NAMES):
-        problems.append(f"manifest has unknown slot {slot!r} - no part of Celerp reads it, "
-                        f"so its entries never appear")
     for index, item in enumerate(_nav_items(manifest)):
         for key in _unknown(item, NAV_ITEM_KEYS):
             hint = (" - core hides a nav entry by the role's \"permission\", so this "
@@ -507,10 +508,17 @@ def _search_provider_problems(folder: Path, item) -> list[str]:
 
 
 def _slot_problems(manifest: dict, folder: Path) -> list[str]:
-    """Every slot entry the 2.5.4 loader would refuse (_validate_slots). Every slot is
-    checked, a slot name Celerp does not read included."""
+    """Every slot the loader would refuse, by name or by entry (_check_slot_contracts).
+    A slot it refuses by name is named once; its entries are not read."""
     problems = []
     for slot, contribution in _slots(manifest).items():
+        if slot not in SLOT_NAMES:
+            problems.append(f"manifest fills unknown slot {slot!r} - the loader refuses the "
+                            f"module; a module may fill {', '.join(sorted(PUBLIC_SLOTS))}")
+            continue
+        if slot in FIRST_PARTY_SLOTS:
+            problems.append(f"Slot {slot!r} is filled by Celerp's own modules only.")
+            continue
         if slot == "search_provider":
             problems += _search_provider_problems(folder, contribution)
             continue

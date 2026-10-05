@@ -63,7 +63,6 @@ HOOKS = (
     "lam = lambda *args, **kwargs: None\n"
     "VALUE = 5\n"
     "async def item_lineage_guard(*, session, entry, transition):\n    return None\n\n\n"
-    "async def inventory_in_production(*, session, company_id):\n    return 0\n"
 )
 # Handler signatures for the slots Celerp calls with keyword arguments only.
 SIGNATURES = (
@@ -217,8 +216,10 @@ class TestCoreParity(unittest.TestCase):
     # ── the rules, one test each ──────────────────────────────────────────────
 
     def test_every_slot_accepts_its_base_entry(self):
-        """Any module may fill any slot Celerp reads (there is no internal list)."""
-        cases = [_slot_case(slot, _base(slot)) for slot in sorted(lint.SLOT_NAMES)]
+        """A module may fill every slot Celerp reads except the ones its own modules fill;
+        it is refused for an unknown slot name."""
+        cases = [_slot_case(slot, _base(slot)) for slot in sorted(lint.PUBLIC_SLOTS)]
+        cases.append(_slot_case("nav_items", _base("nav")))
         cases.append(_slot_case("nav", {"href": "//off.example"}))
         self.assertParity(cases)
 
@@ -227,7 +228,7 @@ class TestCoreParity(unittest.TestCase):
 
     def test_entry_shape(self):
         cases = []
-        for slot in sorted(lint.SLOT_NAMES - {"search_provider"}):
+        for slot in sorted(lint.PUBLIC_SLOTS - {"search_provider"}):
             base = _base(slot)
             for contribution in SHAPES + ([base], base, [base, base], [base, 1], [base, None]):
                 cases.append(Case({slot: contribution}, {"{pkg}/hooks.py": HOOKS}))
@@ -243,12 +244,12 @@ class TestCoreParity(unittest.TestCase):
         values = ("view_inventory", "manage_labels", "", None, 0, False, True, [], {}, 1.5,
                   ["view_inventory"], "not_a_permission", " view_inventory", "VIEW_INVENTORY")
         self.assertParity(_slot_case(slot, {**_base(slot), key: value})
-                          for slot in sorted(lint.SLOT_NAMES) for value in values)
+                          for slot in sorted(lint.PUBLIC_SLOTS) for value in values)
 
     def test_requires_connector(self):
         values = (None, "", False, 0, [], {}, "shopify", " ", 1, True, 1.5, ["shopify"], {"a": 1})
         self.assertParity(_slot_case(slot, {**_base(slot), "requires_connector": value})
-                          for slot in sorted(lint.SLOT_NAMES - {"search_provider"})
+                          for slot in sorted(lint.PUBLIC_SLOTS - {"search_provider"})
                           for value in values)
 
     def test_app_local_destinations(self):
@@ -304,7 +305,7 @@ class TestCoreParity(unittest.TestCase):
     def test_entry_key_types(self):
         """Each key the code reading a slot takes from an entry, in the type it reads."""
         cases = []
-        for slot in sorted(lint.SLOT_NAMES):
+        for slot in sorted(lint.PUBLIC_SLOTS):
             base = _base(slot)
             for key in lint.SLOT_ENTRY_KEYS[slot]:
                 cases.append(_slot_case(slot, {k: v for k, v in base.items() if k != key}))
@@ -412,11 +413,13 @@ class TestCoreParity(unittest.TestCase):
         self.assertParity(cases)
 
     def test_handler_keywords(self):
-        """inventory_in_production and item_lineage_guard: Celerp awaits the handler
-        with exactly its keyword arguments, so a handler taking any other set, any
-        positional-only one, or *args or **kwargs is refused; so is a sync one."""
+        """item_lineage_guard: Celerp awaits the handler with exactly its keyword
+        arguments, so a handler taking any other set, any positional-only one, or
+        *args or **kwargs is refused; so is a sync one."""
         cases = []
         for slot, keywords in sorted(lint.HANDLER_KEYWORDS.items()):
+            if slot not in lint.PUBLIC_SLOTS:
+                continue
             kw = ", ".join(keywords)
             fills = {"kw": kw, "rev": ", ".join(reversed(keywords)),
                      "short": ", ".join(keywords[:-1])}
@@ -435,17 +438,16 @@ class TestCoreParity(unittest.TestCase):
         self.assertParity(cases)
 
     def test_chart_of_accounts_is_not_a_slot(self):
-        """The chart of accounts is the bundled accounting module's alone. A module
-        filling these names loads, and neither Celerp nor lint.py reads them."""
+        """The chart of accounts is the bundled accounting module's alone, not a slot:
+        Celerp refuses a module filling these names, and lint.py says so."""
         names = ("journal_accounts", "chart_accounts", "add_chart_account")
         self.assertFalse(set(names) & slots.SLOT_NAMES)
         self.assertFalse(set(names) & lint.SLOT_NAMES)
-        cases = [_slot_case(name, {"handler": "{pkg}.hooks:async_fn"}) for name in names]
-        cases.append(_slot_case("chart_accounts", {"permission": "admin"}))
-        self.assertParity(cases)
-        for case in cases[:-1]:
+        refused = [_slot_case(name, {"handler": "{pkg}.hooks:async_fn"}) for name in names]
+        self.assertParity(refused + [_slot_case("nav", _base("nav"))])
+        for case in refused:
             folder, _ = self._write(case, flat=False)
-            self.assertTrue(any("unknown slot" in p for p in lint.check(folder)[1]))
+            self.assertTrue(any("unknown slot" in p for p in lint.check(folder)[0]))
 
     def test_module_name(self):
         """The name Celerp admits a module under: its characters, its length, and the
@@ -607,6 +609,7 @@ class TestCoreParity(unittest.TestCase):
         self.assertEqual(lint.SEARCH_PROVIDER_KEYS, set(loader._SEARCH_PROVIDER_KEYS))
         self.assertEqual(lint.SEARCH_PROVIDER_RESULT_KEYS, set(loader._SEARCH_RESULT_KEYS))
         self.assertEqual(lint.SLOT_NAMES, slots.SLOT_NAMES)
+        self.assertEqual(lint.PUBLIC_SLOTS, slots.SLOT_NAMES - slots._FIRST_PARTY_SLOTS)
         self.assertEqual(lint.SLOT_ENTRY_KEYS, loader._SLOT_ENTRY_KEYS)
         self.assertEqual(lint.ENTRY_TYPE_NAMES, loader._TYPE_NAMES)
         self.assertEqual(lint.BULK_ACTION_TYPES, loader._BULK_ACTION_TYPES)

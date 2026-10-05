@@ -107,8 +107,8 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    Celerp 2.5.4 loader enforces that need only your module's files, plus the two
    mistakes that are invisible at runtime, so you catch them in seconds instead
    of on a failed boot. It reports two kinds of finding: problems Celerp refuses
-   or breaks on, and parts of the manifest Celerp ignores (an unknown key or slot
-   name, usually a typo). It exits 1 on either. Rename the folder and the
+   or breaks on (an unknown slot name among them), and parts of the manifest
+   Celerp ignores (an unknown key, usually a typo). It exits 1 on either. Rename the folder and the
    manifest `name` together: Celerp installs a module under its manifest name
    whatever the folder is called, from 2.5.4 it will not load a module whose
    folder and name differ, and lint says so if the two drift apart.
@@ -200,8 +200,13 @@ two, or a handler the loader would refuse (see the next section).
 
 ## Rules every slot entry follows
 
-Any module may fill any slot, and from Celerp 2.5.4 the loader refuses a module
-whose slot entries break any of these:
+A module may fill these slots: `nav`, `search_provider`, `bulk_action`,
+`item_action`, `pricing_action`, `doc_detail_actions`, `doc_detail_badges`,
+`category_schema`, `send_to_targets`, `catalog_channel`, `projection_handler`,
+`on_company_created`, `on_modules_ready`, `doc_finalize_hook`, `on_doc_payment`,
+`item_lineage_guard`. From Celerp 2.5.4 the loader refuses a module that fills any
+other slot name, and `inventory_in_production` is filled by Celerp's own modules
+only. It also refuses a module whose slot entries break any of these:
 
 - Each entry is a dict, and carries what the code reading its slot takes from
   it, in the type it reads it as: `nav` `order` is a number and `key`, `label`
@@ -222,15 +227,13 @@ whose slot entries break any of these:
   and `doc_detail_badges`) gives one `module:function` that resolves to a
   callable in your module's own files. It is an `async def` exactly where Celerp
   awaits it (`search_provider`, `on_company_created`, `on_modules_ready`,
-  `doc_finalize_hook`, `on_doc_payment`, `inventory_in_production`,
-  `item_lineage_guard`) and a plain (not async) callable everywhere else.
-- Celerp calls two handlers with keyword arguments only, so each takes exactly
-  these and no other parameter, none positional-only and no `*args` or
-  `**kwargs`: `inventory_in_production(session, company_id)` returns the stock
-  value issued to work still open that the books still carry on the inventory
-  accounts, and `item_lineage_guard(session, entry, transition)` runs on every
-  live item event, after it is applied and before its effects are booked, and
-  refuses the event by raising.
+  `doc_finalize_hook`, `on_doc_payment`, `item_lineage_guard`) and a plain (not
+  async) callable everywhere else.
+- Celerp calls the `item_lineage_guard` handler with keyword arguments only, so
+  it takes exactly `session, entry, transition` and no other parameter, none
+  positional-only and no `*args` or `**kwargs`. It runs on every live item
+  event, after it is applied and before its effects are booked, and refuses the
+  event by raising.
 
 Every top-level manifest field must also hold the one type Celerp reads it as;
 `python lint.py` reports each of these.
