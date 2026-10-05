@@ -206,10 +206,23 @@ def test_second_company_sees_and_changes_nothing_of_the_first(env):
         assert env.api.patch(f"{API}/{eq}/field/name", json={"value": "Taken"}).status_code == 404
         assert env.api.post(f"{API}/{eq}/archive").status_code == 404
         assert env.api.delete(f"{API}/{eq}/files/{fid}").status_code == 404
-    first = env.rows("acme_equipment")
+        own = env.equipment("Press", company_id=env.other_company_id)
+        assert env.api.get(f"{API}/{own}/files/{fid}/download").status_code == 404
+        assert env.api.delete(f"{API}/{own}/files/{fid}").json() == {"deleted": False}
+    first = env.rows("acme_equipment", company_id=env.company_id)
     assert [r["name"] for r in first] == ["Lathe"] and first[0]["archived_at"] is None
     assert len(env.rows("acme_equipment_file")) == 1
     assert env.api.get(f"{API}/{eq}/files/{fid}/download").status_code == 200
+
+
+def test_file_is_reached_only_through_its_own_equipment(env):
+    """A file id under another machine of the same company is not found and not deleted."""
+    eq, other = env.equipment("Lathe"), env.equipment("Press")
+    fid = env.api.post(f"{API}/{eq}/files",
+                       files={"file": ("manual.txt", b"text", "text/plain")}).json()["id"]
+    assert env.api.get(f"{API}/{other}/files/{fid}/download").status_code == 404
+    assert env.api.delete(f"{API}/{other}/files/{fid}").json() == {"deleted": False}
+    assert len(env.rows("acme_equipment_file")) == 1
 
 
 def test_write_401_redirects_to_login(env):
