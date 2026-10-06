@@ -29,6 +29,7 @@ one. See the full guide at <https://www.celerp.com/docs/modules.html>.
 
 ```
 AGENTS.md                       read this first: the eight rules and what proves each
+CLAUDE.md                       points Claude Code at AGENTS.md
 acme-maintenance/               the module (copy and rename this whole folder)
   __init__.py                   PLUGIN_MANIFEST - the module's identity and slots
   acme_maintenance/             the inner Python package (underscore, not hyphen)
