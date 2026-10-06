@@ -9,7 +9,8 @@ see other installed modules:
   - the folder has an __init__.py with a PLUGIN_MANIFEST
   - the manifest has the required identity fields and at least one slot/route
   - the module name is letters, digits, '-' and '_' (64 at most), matches its
-    folder, and is not in the reserved `celerp-` namespace
+    folder, and is not in the reserved `celerp-` namespace (in any letter case,
+    or spelled `celerp_`)
   - the module's name, and each package or file directly in its folder, is a
     package name Python and Celerp do not already use (Celerp also refuses the name
     of a package installed beside it, which only the installation can tell)
@@ -923,7 +924,7 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
                  or not all(c.isascii() and (c.isalnum() or c in "-_") for c in name)):
         problems.append(f"name {name!r} must start with a letter or digit and hold only "
                         f"letters, digits, '-' and '_', {NAME_MAX} characters at most")
-    if name.startswith("celerp-"):
+    if name.lower().startswith(("celerp-", RESERVED_IMPORT_PREFIX)):
         problems.append(f"name {name!r} uses the reserved `celerp-` namespace - "
                         "prefix with your own vendor name")
     # Celerp installs a module under its manifest name, whatever the folder is

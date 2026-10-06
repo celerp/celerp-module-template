@@ -132,9 +132,10 @@ class TestProtectedImports(unittest.TestCase):
                 self.assertTrue(any("celerp.gateway" in p for p in problems), problems)
 
     def test_reserved_prefix_flagged(self):
-        folder = _module("celerp-thing")
-        problems = lint.lint(folder)
-        self.assertTrue(any("celerp-" in p for p in problems), problems)
+        for name in ("celerp-thing", "Celerp-thing", "CELERP-thing", "celerp_thing"):
+            with self.subTest(name=name):
+                problems = lint.lint(_module(name))
+                self.assertTrue(any("reserved `celerp-`" in p for p in problems), problems)
 
 
 class TestStrRenderedFragments(unittest.TestCase):

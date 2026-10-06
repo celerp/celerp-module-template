@@ -468,9 +468,10 @@ class TestCoreParity(unittest.TestCase):
         self.assertParity(Case({"nav": [_base("nav")]}, name=name) for name in names)
 
     def test_reserved_name_prefix(self):
-        """celerp- names are reserved for Marketplace modules: the upload refuses
-        them, and lint.py flags them."""
-        for name, reserved in (("celerp-x", True), ("acme-x", False)):
+        """celerp- names, in any letter case and spelled celerp_, are reserved for
+        Marketplace modules: the upload refuses them, and lint.py flags them."""
+        for name, reserved in (("celerp-x", True), ("Celerp-x", True), ("CELERP-x", True),
+                               ("celerp_x", True), ("acme-x", False), ("acme-celerp-x", False)):
             folder, _ = self._write(Case({"nav": [_base("nav")]}, name=name), flat=False)
             flagged = any("reserved `celerp-`" in p for p in lint.check(folder)[0])
             try:
