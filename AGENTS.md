@@ -107,7 +107,7 @@ hand-rolled version would drift from the rest of the app the first time core cha
 **4. Gate reads and writes with a permission key, and use an existing one.**
 Permission keys are a closed registry (`celerp/services/permissions.py:54`), and
 the loader refuses a module whose slot entries name a key outside it, in either
-`permission` or `write_permission` (`celerp/modules/loader.py:2314`), so a module
+`permission` or `write_permission` (`celerp/modules/loader.py:2311`), so a module
 cannot invent one today. Pick the
 key that matches what the page does. The API router depends on `require_permission`
 (`acme-maintenance/acme_maintenance/routes.py:54`) and the sidebar hides an entry
@@ -120,7 +120,7 @@ hand-made request.
 not an error to the loader, it is ignored, so a misspelled gate ships wide open in
 silence. `min_role` is the classic: it looks like it gates the nav entry and it does
 nothing at all. There is no `icon` key either. The loader reads route modules by
-name (`celerp/modules/loader.py:1540`), and `lint.py` holds the full list of accepted
+name (`celerp/modules/loader.py:1537`), and `lint.py` holds the full list of accepted
 keys. `api_routes` and `ui_routes` each name a file inside the module that defines
 its own `setup_api_routes` or `setup_ui_routes` (`celerp/modules/loader.py:622`). The
 manifest `name` must equal the module's folder name, start with a letter or digit, and
@@ -158,10 +158,10 @@ key, carrying an unknown one, naming a `result_key` outside the two the
 aggregator reads, or a handler the loader would refuse.
 
 Every slot entry, in any slot, follows the same rules from Celerp 2.5.4
-(`celerp/modules/loader.py:2287`). A module may fill every slot in `lint.PUBLIC_SLOTS`;
+(`celerp/modules/loader.py:2284`). A module may fill every slot in `lint.PUBLIC_SLOTS`;
 `inventory_in_production` is filled by Celerp's own modules only. Each entry is a
 dict, and carries what the code reading its slot takes from it, in the type it
-reads it as (`celerp/modules/loader.py:2257`): a `nav` `order` is a number, a
+reads it as (`celerp/modules/loader.py:2254`): a `nav` `order` is a number, a
 `send_to_targets` entry names its `doc_type`, a `catalog_channel` its `id`, a
 `category_schema` entry its `category` and a list of `fields`, each a dict with a
 text `key`, and a `bulk_action` `action_type` is `htmx` or `navigate`.
@@ -175,10 +175,10 @@ string, and no prefix starts with another: within the module, across enabled
 modules, or against Celerp's own `sys.`, `mp.` and `shop.sync.`
 (`celerp/modules/slots.py`, `KERNEL_PROJECTION_PREFIXES`). A slot that names code to run (its `handler`, or `render` for the
 `doc_detail_*` slots) gives one `module:function` that resolves to a callable in
-this module's own files, async exactly where Celerp awaits it (`celerp/modules/loader.py:2526`).
+this module's own files, async exactly where Celerp awaits it (`celerp/modules/loader.py:2523`).
 The `item_lineage_guard` handler is called with keyword arguments only, so it
 takes exactly `session, entry, transition`: no other parameter, none
-positional-only, and no `*args` or `**kwargs` (`celerp/modules/loader.py:2132`).
+positional-only, and no `*args` or `**kwargs` (`celerp/modules/loader.py:2129`).
 
 The tables a module creates must start with its `table_prefix`: at least 3
 characters, ending in `_`, and no table Celerp keeps for itself may start with it,
@@ -187,7 +187,7 @@ modules' prefixes may not overlap either: neither prefix may be a prefix of the
 other (`celerp/modules/importer.py:326`). Only the installation knows the other
 modules, so `lint.py` checks every rule here except that last one. A module whose
 code defines a table outside its prefix, or any table without one, is taken out
-before any table is created (`celerp/modules/loader.py:1604`).
+before any table is created (`celerp/modules/loader.py:1601`).
 
 A module's package names are its own. The module folder, and each package or
 importable file (source, compiled or extension) directly inside it, is a name
@@ -200,7 +200,7 @@ migrations.** Module models register on Celerp's shared metadata when the loader
 imports them, and Celerp runs `create_all` after loading modules
 (`celerp/main.py:301`), so a new table appears on the next launch. A module that
 fails to load, or whose routes fail to register, gets none of its tables created
-(`celerp/modules/loader.py:1246`). `create_all`
+(`celerp/modules/loader.py:1243`). `create_all`
 cannot alter an existing table, so any change to a table you have shipped is a
 migration. Celerp runs every file in the manifest's `migrations` package at each
 start, in filename order, before the module loads
@@ -266,14 +266,14 @@ Each `path:line` above, with the exact text of that line. Paths under `celerp/` 
 - `celerp/modules/importer.py:252`: `def reserved_tables(name: str) -> frozenset[str]:`
 - `celerp/modules/importer.py:326`: `def table_prefix_problem(name: str, prefix: object,`
 - `celerp/modules/importer.py:85`: `def _validate_name(name: str, *, official: bool = False) -> None:`
-- `celerp/modules/loader.py:1246`: `def _drop_tables(names: set[str]) -> None:`
-- `celerp/modules/loader.py:1540`: `route_mod_path = manifest.get(manifest_key)`
-- `celerp/modules/loader.py:1604`: `def _stray_table_problem(manifest: dict) -> str | None:`
-- `celerp/modules/loader.py:2132`: `_HANDLER_KEYWORDS = {`
-- `celerp/modules/loader.py:2257`: `_SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {`
-- `celerp/modules/loader.py:2287`: `def _validate_slot_entry(slot: str, item) -> None:`
-- `celerp/modules/loader.py:2314`: `if key in item and not is_permission_key(item[key]):`
-- `celerp/modules/loader.py:2526`: `def _check_owned_callable(`
+- `celerp/modules/loader.py:1243`: `def _drop_tables(names: set[str]) -> None:`
+- `celerp/modules/loader.py:1537`: `route_mod_path = manifest.get(manifest_key)`
+- `celerp/modules/loader.py:1601`: `def _stray_table_problem(manifest: dict) -> str | None:`
+- `celerp/modules/loader.py:2129`: `_HANDLER_KEYWORDS = {`
+- `celerp/modules/loader.py:2254`: `_SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {`
+- `celerp/modules/loader.py:2284`: `def _validate_slot_entry(slot: str, item) -> None:`
+- `celerp/modules/loader.py:2311`: `if key in item and not is_permission_key(item[key]):`
+- `celerp/modules/loader.py:2523`: `def _check_owned_callable(`
 - `celerp/modules/loader.py:592`: `def module_migration_files(pkg_path: Path, migrations_pkg) -> list[Path]:`
 - `celerp/modules/loader.py:622`: `def _check_route_source(pkg_path: Path, manifest: dict, kind: str) -> None:`
 - `celerp/modules/loader.py:738`: `def _check_import_names(name: str, pkg_path: Path) -> None:`
