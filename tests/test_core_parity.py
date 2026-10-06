@@ -71,6 +71,9 @@ SIGNATURES = (
 )
 
 
+_RESERVED_NAMES = "'celerp-' or 'celerp_', in any letter case, are reserved for Marketplace modules"
+
+
 class Case:
     """One module: a slots manifest, extra manifest fields and source files. Strings
     in all three may say {pkg}, the module's inner package name. `links` maps a path
@@ -340,12 +343,13 @@ class TestCoreParity(unittest.TestCase):
 
     def test_import_names(self):
         """The package names a module answers to: its own folder's, and each package
-        or source file directly in the folder."""
+        or importable file (source, compiled or extension) directly in the folder."""
         cases = [Case({"nav": [_base("nav")]}, name=name)
                  for name in ("acme_names", "json", "ui", "celerp", "default_modules",
                               "celerp_x", "tabnanny")]
         for rel in ("json.py", "ui/__init__.py", "celerp_x.py", "premium_modules/__init__.py",
-                    "acme_names_helper.py", "json/data.txt"):
+                    "acme_names_helper.py", "json/data.txt", "celerp_x.pyc",
+                    "json.abi3.so", "ui/__init__.pyc", "acme_names_helper.pyc"):
             cases.append(Case({"nav": [_base("nav")]}, {rel: ""}))
         self.assertParity(cases)
 
@@ -473,12 +477,12 @@ class TestCoreParity(unittest.TestCase):
         for name, reserved in (("celerp-x", True), ("Celerp-x", True), ("CELERP-x", True),
                                ("celerp_x", True), ("acme-x", False), ("acme-celerp-x", False)):
             folder, _ = self._write(Case({"nav": [_base("nav")]}, name=name), flat=False)
-            flagged = any("reserved `celerp-`" in p for p in lint.check(folder)[0])
+            flagged = any(_RESERVED_NAMES in p for p in lint.check(folder)[0])
             try:
                 importer._validate_name(name)
                 refused = False
-            except importer.ModuleImportError:
-                refused = True
+            except importer.ModuleImportError as exc:
+                refused = _RESERVED_NAMES in str(exc)
             self.assertEqual((flagged, refused), (reserved, reserved), name)
 
     def test_route_entrypoints(self):

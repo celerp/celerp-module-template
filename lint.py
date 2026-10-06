@@ -9,8 +9,8 @@ see other installed modules:
   - the folder has an __init__.py with a PLUGIN_MANIFEST
   - the manifest has the required identity fields and at least one slot/route
   - the module name is letters, digits, '-' and '_' (64 at most), matches its
-    folder, and is not in the reserved `celerp-` namespace (in any letter case,
-    or spelled `celerp_`)
+    folder, and does not start with the reserved `celerp-` or `celerp_` (in any
+    letter case)
   - the module's name, and each package or file directly in its folder, is a
     package name Python and Celerp do not already use (Celerp also refuses the name
     of a package installed beside it, which only the installation can tell)
@@ -53,6 +53,7 @@ Exit 0 = clean, 1 = findings (printed).
 from __future__ import annotations
 
 import ast
+import importlib.machinery
 import os
 import re
 import sys
@@ -860,10 +861,17 @@ def _stray_table_problems(manifest: dict, folder: Path) -> list[str]:
 def _import_name_problems(folder: Path) -> list[str]:
     """The loader's _check_import_names, as far as the module's own files tell: the
     names the module answers to (loader._import_roots) are its folder's name and each
-    package or source file directly in the folder."""
-    roots = {folder.name} | {entry.stem for entry in folder.iterdir()
-                             if (entry.is_dir() and (entry / "__init__.py").is_file())
-                             or (entry.suffix == ".py" and entry.name != "__init__.py")}
+    package or importable file (source, compiled or extension) directly in the folder."""
+    suffixes = importlib.machinery.all_suffixes()
+    roots = {folder.name}
+    for entry in folder.iterdir():
+        if entry.is_dir():
+            if any((entry / f"__init__{s}").is_file() for s in suffixes):
+                roots.add(entry.name)
+            continue
+        stem = next((entry.name[:-len(s)] for s in suffixes if entry.name.endswith(s)), None)
+        if stem and stem != "__init__":
+            roots.add(stem)
     return [f"the package name {root!r} is already used by Python or Celerp - the module "
             "must use its own" for root in sorted(roots)
             if root in TAKEN_PACKAGE_NAMES or root.startswith(RESERVED_IMPORT_PREFIX)]
@@ -925,8 +933,9 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
         problems.append(f"name {name!r} must start with a letter or digit and hold only "
                         f"letters, digits, '-' and '_', {NAME_MAX} characters at most")
     if name.lower().startswith(("celerp-", RESERVED_IMPORT_PREFIX)):
-        problems.append(f"name {name!r} uses the reserved `celerp-` namespace - "
-                        "prefix with your own vendor name")
+        problems.append(f"name {name!r}: names starting with 'celerp-' or 'celerp_', in "
+                        "any letter case, are reserved for Marketplace modules - prefix "
+                        "with your own vendor name")
     # Celerp installs a module under its manifest name, whatever the folder is
     # called, so renaming only one of the two lands the module somewhere the
     # author is not looking (or on top of the module they copied).

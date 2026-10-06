@@ -76,10 +76,11 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
 1. Read `AGENTS.md`. It is short, and it is the difference between a module that
    looks native and one that looks like a bolt-on.
 2. Rename the folder and the inner package (keep the hyphen/underscore split:
-   `your-thing` outside, `your_thing` inside). **Do not use a `celerp-` name -
-   that prefix is reserved for Marketplace modules, and the upload refuses it.**
-   Every package or `.py` file directly in the module folder is a name Python
-   imports it by, so none may be a name Python or Celerp already uses (no
+   `your-thing` outside, `your_thing` inside). **Do not use a name starting
+   `celerp-` or `celerp_`, in any letter case - those are reserved for
+   Marketplace modules, and the upload refuses them.**
+   Every package or importable file (`.py`, `.pyc` or extension) directly in the
+   module folder is a name Python imports it by, so none may be a name Python or Celerp already uses (no
    `json.py`, no `ui/`, nothing starting `celerp_`).
 3. Update `PLUGIN_MANIFEST` in `__init__.py`: name, display name, the nav slot.
    The nav entry's `permission` is what hides it from a role that cannot use the

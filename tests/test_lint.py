@@ -56,6 +56,9 @@ def _module(folder_name: str, manifest_name: str | None = None,
     return folder
 
 
+_RESERVED_NAMES = "'celerp-' or 'celerp_', in any letter case, are reserved for Marketplace modules"
+
+
 class TestShippedModule(unittest.TestCase):
     def test_template_module_passes_clean(self):
         self.assertEqual(lint.lint(MODULE), [])
@@ -135,7 +138,7 @@ class TestProtectedImports(unittest.TestCase):
         for name in ("celerp-thing", "Celerp-thing", "CELERP-thing", "celerp_thing"):
             with self.subTest(name=name):
                 problems = lint.lint(_module(name))
-                self.assertTrue(any("reserved `celerp-`" in p for p in problems), problems)
+                self.assertTrue(any(_RESERVED_NAMES in p for p in problems), problems)
 
 
 class TestStrRenderedFragments(unittest.TestCase):
