@@ -9,9 +9,9 @@ The loader reads PLUGIN_MANIFEST below to learn the module's identity, which
 extension slots it fills, and where its routes and migrations live. Everything
 the loader needs is in this one dict.
 
-NAMING: third-party modules must NOT use the `celerp-` prefix - that namespace
-is reserved for official modules so users can tell first-party from community
-at a glance. Prefix with your own name instead (here: `acme-`).
+NAMING: do not use the `celerp-` prefix - names starting with it are reserved
+for Marketplace modules, and the upload refuses them. Prefix with your own name
+instead (here: `acme-`).
 """
 
 PLUGIN_MANIFEST = {

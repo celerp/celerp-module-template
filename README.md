@@ -77,7 +77,7 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    looks native and one that looks like a bolt-on.
 2. Rename the folder and the inner package (keep the hyphen/underscore split:
    `your-thing` outside, `your_thing` inside). **Do not use a `celerp-` name -
-   that prefix is reserved for official modules.**
+   that prefix is reserved for Marketplace modules, and the upload refuses it.**
    Every package or `.py` file directly in the module folder is a name Python
    imports it by, so none may be a name Python or Celerp already uses (no
    `json.py`, no `ui/`, nothing starting `celerp_`).

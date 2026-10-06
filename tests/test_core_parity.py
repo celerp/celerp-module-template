@@ -9,8 +9,8 @@ on disk. Celerp takes it through the path it boots with: admission before any of
 the module's code or migrations run (identity, route sources, the migrations
 package, protected imports), then load_all (import, every slot rule, callable
 resolution and provenance), then API and UI route registration (the setup
-functions' provenance), or, for table_prefix, through its install check. lint.py
-checks the same folder.
+functions' provenance), or, for table_prefix and the reserved celerp- name
+prefix, through its install check. lint.py checks the same folder.
 For every rule, both must accept the same modules and refuse the same modules,
 and each rule's cases include both kinds.
 
@@ -462,11 +462,23 @@ class TestCoreParity(unittest.TestCase):
             self.assertTrue(any("unknown slot" in p for p in lint.check(folder)[0]))
 
     def test_module_name(self):
-        """The name Celerp admits a module under: its characters, its length, and the
-        reserved celerp- prefix."""
+        """The name Celerp admits a module under: its characters and its length."""
         names = ("acme-x", "acme_x", "Acme9", "9acme", "a" * 64, "a" * 65, "-acme", "_acme",
-                 "acme.x", "acme x", "acmé", "celerp-x")
+                 "acme.x", "acme x", "acmé")
         self.assertParity(Case({"nav": [_base("nav")]}, name=name) for name in names)
+
+    def test_reserved_name_prefix(self):
+        """celerp- names are reserved for Marketplace modules: the upload refuses
+        them, and lint.py flags them."""
+        for name, reserved in (("celerp-x", True), ("acme-x", False)):
+            folder, _ = self._write(Case({"nav": [_base("nav")]}, name=name), flat=False)
+            flagged = any("reserved `celerp-`" in p for p in lint.check(folder)[0])
+            try:
+                importer._validate_name(name)
+                refused = False
+            except importer.ModuleImportError:
+                refused = True
+            self.assertEqual((flagged, refused), (reserved, reserved), name)
 
     def test_route_entrypoints(self):
         """api_routes and ui_routes: a file inside the module that defines setup or

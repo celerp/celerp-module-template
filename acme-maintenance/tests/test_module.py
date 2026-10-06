@@ -37,7 +37,7 @@ def _manifest() -> dict:
 def test_manifest_is_well_formed():
     m = _manifest()
     assert m["name"] == "acme-maintenance"
-    assert not m["name"].startswith("celerp-"), "celerp- prefix is reserved for official modules"
+    assert not m["name"].startswith("celerp-"), "celerp- names are reserved for Marketplace modules"
     assert m["api_routes"] and m["ui_routes"]
     assert "nav" in m["slots"]
     # A dotted version, or Celerp's compatibility check cannot compare it.
