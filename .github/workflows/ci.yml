@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: celerp/celerp
-          ref: 4d79b6f7ea08d7f3c4006199a8bd5719fbf503fc
+          ref: 61ed34be79a44e474ed43440dc7b181d61186dda
           path: celerp
       - uses: actions/setup-python@v5
         with:

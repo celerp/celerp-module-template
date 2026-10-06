@@ -7,6 +7,7 @@ which is the whole point of lint.py.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import pathlib
 import re
@@ -62,6 +63,28 @@ _RESERVED_NAMES = "'celerp-' or 'celerp_', in any letter case, are reserved for 
 class TestShippedModule(unittest.TestCase):
     def test_template_module_passes_clean(self):
         self.assertEqual(lint.lint(MODULE), [])
+
+    def test_template_module_makes_no_network_calls_of_its_own(self):
+        """The example reaches Celerp's API through api_request, never a client of
+        its own: raw networking sends a module to review."""
+        raw = {"httpx", "requests", "aiohttp", "urllib.request", "urllib3", "socket",
+               "http.client", "ssl"}
+        found = []
+        for py_file in MODULE.rglob("*.py"):
+            rel = py_file.relative_to(MODULE)
+            if rel.parts[0] == "tests":
+                continue
+            for node in ast.walk(ast.parse(py_file.read_text(encoding="utf-8"))):
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+                    names += [a.name for a in node.names]
+                found += [f"{rel}: {n}" for n in names
+                          if n == "API_BASE" or any(n == r or n.startswith(r + ".")
+                                                    for r in raw)]
+        self.assertEqual(found, [])
 
 
 class TestFolderNameMatchesManifest(unittest.TestCase):
@@ -123,7 +146,25 @@ class TestProtectedImports(unittest.TestCase):
         folder = _module("acme-thing")
         (folder / "service.py").write_text("from celerp.ai import quota\n", encoding="utf-8")
         problems = lint.lint(folder)
-        self.assertTrue(any("celerp.ai.quota" in p for p in problems), problems)
+        self.assertTrue(any("'celerp.ai'" in p for p in problems), problems)
+
+    def test_every_celerp_ai_module_flagged(self):
+        """celerp.ai is protected as a whole, not file by file."""
+        for source in ("import celerp.ai\n", "import celerp.ai.llm\n", "from celerp.ai import llm\n",
+                       "from celerp.ai.tools import run\n",
+                       'import importlib\nimportlib.import_module("celerp.ai.anything")\n'):
+            with self.subTest(source=source):
+                folder = _module("acme-thing")
+                (folder / "service.py").write_text(source, encoding="utf-8")
+                problems = lint.check(folder)[0]
+                self.assertTrue(any("'celerp.ai'" in p for p in problems), problems)
+
+    def test_public_module_api_not_flagged(self):
+        folder = _module("acme-thing")
+        (folder / "service.py").write_text(
+            "from celerp.modules.api import ai_query, api_request, read_resource\n",
+            encoding="utf-8")
+        self.assertEqual(lint.check(folder)[0], [])
 
     def test_protected_internal_imported_by_name_at_run_time_flagged(self):
         for call in ('importlib.import_module("celerp.gateway")', '__import__("celerp.gateway")'):
@@ -139,6 +180,27 @@ class TestProtectedImports(unittest.TestCase):
             with self.subTest(name=name):
                 problems = lint.lint(_module(name))
                 self.assertTrue(any(_RESERVED_NAMES in p for p in problems), problems)
+
+
+class TestRuntimeRequirements(unittest.TestCase):
+    """Celerp installs no Python packages for a module, so a module ships no
+    requirements.txt."""
+
+    def test_requirements_file_flagged(self):
+        for rel in ("requirements.txt", "thing/requirements.txt", "Requirements.TXT",
+                    "tests/requirements.txt"):
+            with self.subTest(rel=rel):
+                folder = _module("acme-thing")
+                (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+                (folder / rel).write_text("requests\n", encoding="utf-8")
+                problems = lint.check(folder)[0]
+                self.assertTrue(any(p.startswith(rel) and "Celerp's installed dependencies" in p
+                                    for p in problems), problems)
+
+    def test_other_text_files_not_flagged(self):
+        folder = _module("acme-thing")
+        (folder / "thing" / "notes.txt").write_text("requests\n", encoding="utf-8")
+        self.assertEqual(lint.check(folder)[0], [])
 
 
 class TestStrRenderedFragments(unittest.TestCase):

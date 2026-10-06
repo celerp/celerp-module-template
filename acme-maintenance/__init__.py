@@ -25,9 +25,9 @@ PLUGIN_MANIFEST = {
     # The oldest Celerp this module is built and tested against. Celerp refuses
     # to install it on anything older, with a message telling the user to update.
     # Raise this whenever you start using a core component an earlier release
-    # did not have: these pages need the shared cell's caller-supplied save URL
-    # and date type, and the public files section, which arrive in 2.0.0.
-    "min_celerp_version": "2.0.0",
+    # did not have: these pages call Celerp's API through celerp.modules.api
+    # (api_request and read_resource), which arrives in 2.5.4.
+    "min_celerp_version": "2.5.4",
 
     # ── Routes ────────────────────────────────────────────────────────────────
     # Dotted paths to the inner package's route modules. The loader imports each

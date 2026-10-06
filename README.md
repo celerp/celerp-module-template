@@ -37,12 +37,14 @@ acme-maintenance/               the module (copy and rename this whole folder)
     routes.py                   API: list / create / edit-field / mark-serviced /
                                 archive / restore / service log / files
     ui_routes.py                the /maintenance list, detail and calendar pages
+    resources/                  files the module ships and reads with read_resource
     migrations/                 schema changes Celerp runs at every start
   tests/                        the module's suite: real database, real API app
     conftest.py                 the harness to copy into your own module
     test_api.py                 permissions, validation, and failure paths
     test_render.py              what the pages render, and what they must not
     test_calendar.py            the calendar view and its print rule
+    test_resources.py           the shipped print rule is the one the page uses
     test_migration.py           the migration applies, and is safe to re-run
     test_module.py              manifest shape and domain logic, no app needed
     htmlq.py                    a small HTML query helper for the render tests
@@ -133,6 +135,38 @@ One consequence to know before you build on it: Celerp's **Company Files** view
 aggregates core entities only, and there is no slot for a module to contribute
 to it. Your module's files live on your module's pages. Nothing is lost or
 hidden, but a user looking for them in Company Files will not find them.
+
+## Calling Celerp, shipped files, and AI
+
+`celerp.modules.api` is the public surface for module code. It has three helpers,
+and the sample module uses the first two:
+
+- `await api_request(request, method, path, *, json=None, params=None)` calls
+  Celerp's own API as the user signed in on `request` and returns an
+  `httpx.Response`. `path` is a path inside Celerp, such as `/companies/me`;
+  Celerp supplies the address, the timeout and the sign-in. It sends a JSON body
+  or query parameters only, so this module uploads a file as base64 inside JSON.
+- `read_resource(__file__, "resources/calendar-print.css")` returns the bytes of
+  a file shipped with the module. Pass your own file's `__file__`; the path is
+  relative to that file's folder and must stay inside it.
+- `await ai_query(query, company_id, session_token=None, db_session=None)` runs an
+  AI query through Celerp's own AI service and returns a dict with `answer`,
+  `model_used` and `tools_called`. Pass the request's database session: the query
+  runs only for that request's company and for a role allowed to use the AI
+  assistant.
+
+Three things follow for every module:
+
+- **Network.** Reach Celerp through `api_request`. A module that makes network
+  calls of its own (its own HTTP client, sockets, or another service's API) is
+  reviewed by a person before it is admitted to the Community catalog, and those
+  calls must be declared in its listing.
+- **AI.** Use `ai_query` for any AI feature. A module that runs AI inference
+  itself, through a provider's SDK, its own model server, or a model address the
+  user configures, cannot be approved.
+- **Dependencies.** Celerp installs nothing for a module. A module runs on the
+  packages Celerp already has, so it ships no `requirements.txt`, and
+  `python lint.py` reports one anywhere in the module folder.
 
 ## Disclose what it touches
 
@@ -275,8 +309,7 @@ placeholders, the descriptor takes only `label`, `label_key`,
 that connector), and `show_on` holds
 only the six traits, never both of one pair. From 2.5.4 the loader refuses a
 module that breaks any of these; 2.5.3 and earlier ignore the slot and show
-nothing. `python lint.py` reports each one, whichever release you target. The sample module does not use this slot, so it still
-installs on 2.0.0.
+nothing. `python lint.py` reports each one, whichever release you target. The sample module does not use this slot.
 
 ## What to reach for next
 
@@ -290,8 +323,8 @@ installs on 2.0.0.
   check permissions. From 2.5.4 an `item_action` `href_template` follows
   the Pricing-row link rules (inside Celerp, braces only around `{entity_id}`),
   and `python lint.py` reports a link that breaks them.
-- The public module API for AI features lives in `celerp.modules.api`. Which
-  internals are off limits, and why, is in `AGENTS.md`; `lint.py` enforces it.
+- The public module API is `celerp.modules.api` (above). Which internals are off
+  limits, and why, is in `AGENTS.md`; `lint.py` enforces it.
 
 ## A note on compatibility
 

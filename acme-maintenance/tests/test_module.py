@@ -44,6 +44,16 @@ def test_manifest_is_well_formed():
     assert re.fullmatch(r"\d+(\.\d+){0,2}", m["min_celerp_version"])
 
 
+def test_min_version_covers_the_module_api():
+    """The pages call celerp.modules.api, which arrives in 2.5.4; an older Celerp
+    would install the module and then fail to import it."""
+    uses_api = any("celerp.modules.api" in f.read_text(encoding="utf-8")
+                   for f in (MODULE_DIR / "acme_maintenance").rglob("*.py"))
+    assert uses_api
+    wanted = tuple(int(p) for p in _manifest()["min_celerp_version"].split("."))
+    assert wanted >= (2, 5, 4)
+
+
 def test_manifest_nav_uses_permission():
     """A25: core nav gating reads "permission"; a "min_role" key is silently ignored."""
     from celerp.services.permissions import _PERMISSIONS_BY_KEY

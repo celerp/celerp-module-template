@@ -18,6 +18,10 @@ Four things here are worth copying into your own module.
    read in one go.
 4. A module ships no CSS. Every class below already exists in core's stylesheet,
    which is why there is no `maint-` class anywhere in this file.
+5. Every call to the API goes through `api_request` from `celerp.modules.api`,
+   which signs the call in as the user on the page. The module brings no HTTP
+   client of its own, and a file it ships beside its code (the calendar's print
+   rule) is read with `read_resource`.
 
 The page asks the same permission the API enforces, so a viewer is not offered a
 control that would only fail. That is presentation, not protection: every write
@@ -26,12 +30,12 @@ gets a 403 there.
 """
 from __future__ import annotations
 
+import base64
 import calendar as _calendar
 import logging
 from datetime import date, datetime
 from urllib.parse import urlencode
 
-import httpx
 from fasthtml.common import (
     A, Button, Div, H3, Input, P, Script, Span, Style, Table, Tbody, Td, Th,
     Thead, Tr, to_xml,
@@ -39,6 +43,7 @@ from fasthtml.common import (
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
+from celerp.modules.api import api_request, read_resource
 from celerp.services.permissions import role_has_permission
 from ui.components.files import files_section
 from ui.components.shell import base_shell, flash, page_header, toast_header
@@ -47,7 +52,7 @@ from ui.components.table import (
     date_range_filter, display_cell, editable_cell, empty_state_cta, filter_th,
     search_bar, sortable_th, status_cards, table_pager,
 )
-from ui.config import API_BASE, COOKIE_NAME, get_role
+from ui.config import get_role
 
 log = logging.getLogger(__name__)
 
@@ -86,18 +91,15 @@ LIST_ERROR = ("The equipment list could not be loaded, so none of it is shown be
 DETAIL_ERROR = "This equipment record could not be loaded, so none of it is shown below."
 
 # One month grid does not fit a portrait page. `@page` is the only styling this
-# module adds, and it goes through the shell's supported extra_head hook.
-CALENDAR_PRINT_CSS = "@page { size: A4 landscape; margin: 10mm; }"
-
-def _api(request: Request):
-    token = request.cookies.get(COOKIE_NAME)
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    return httpx.AsyncClient(base_url=API_BASE, headers=headers, timeout=5)
+# module adds, and it goes through the shell's supported extra_head hook. The rule
+# is a file shipped beside this one, read once at import.
+CALENDAR_PRINT_CSS = read_resource(__file__, "resources/calendar-print.css").decode("utf-8")
 
 
 # ── talking to the module's own API ────────────────────────────────────────────
 
-async def _call(request: Request, method: str, url: str, **kw) -> tuple[int, dict]:
+async def _call(request: Request, method: str, url: str, *,
+                json: dict | None = None, params: dict | None = None) -> tuple[int, dict]:
     """One API call. Status 0 means the request never landed at all.
 
     Returning the status instead of raising is what lets each route decide: 401
@@ -105,10 +107,9 @@ async def _call(request: Request, method: str, url: str, **kw) -> tuple[int, dic
     call that never landed renders an error state rather than an empty list.
     """
     try:
-        async with _api(request) as c:
-            r = await getattr(c, method)(url, **kw)
+        r = await api_request(request, method, url, json=json, params=params)
     except Exception as exc:  # noqa: BLE001 - any transport failure reads the same to the user
-        log.warning("maintenance: %s %s failed: %s", method.upper(), url, exc)
+        log.warning("maintenance: %s %s failed: %s", method, url, exc)
         return 0, {}
     try:
         payload = r.json()
@@ -139,7 +140,7 @@ async def _context(request: Request) -> tuple[dict, bool]:
     from the same helper and the same key the API router enforces. Settings that
     cannot be read leave that answer unknown, so the page shows no write controls.
     """
-    status, company = await _call(request, "get", "/companies/me")
+    status, company = await _call(request, "GET", "/companies/me")
     if status != 200:
         return {}, False
     settings = company.get("settings") or {}
@@ -152,7 +153,7 @@ async def _location_names(request: Request) -> list[str] | None:
     None covers both a company with no locations yet and a call that failed. The
     cell degrades to free text either way rather than opening an empty dropdown.
     """
-    status, payload = await _call(request, "get", "/companies/me/locations")
+    status, payload = await _call(request, "GET", "/companies/me/locations")
     if status != 200:
         return None
     names = [str(loc.get("name") or "") for loc in payload.get("items", []) if loc.get("name")]
@@ -530,7 +531,7 @@ def setup_ui_routes(app) -> None:
 
     async def _list_data(request: Request, params: dict) -> tuple[int, list[dict]]:
         query = {"show": params["show"]} if params["show"] else None
-        status, payload = await _call(request, "get", API, params=query)
+        status, payload = await _call(request, "GET", API, params=query)
         return status, payload.get("items", [])
 
     async def _list_fragment(request: Request, *, message: str | None = None,
@@ -548,7 +549,7 @@ def setup_ui_routes(app) -> None:
                             headers=toast_header(message, kind) if message else {})
 
     async def _detail_data(request: Request, equipment_id: str) -> tuple[int, dict]:
-        return await _call(request, "get", f"{API}/{equipment_id}")
+        return await _call(request, "GET", f"{API}/{equipment_id}")
 
     async def _detail_fragment(request: Request, equipment_id: str, *,
                                message: str | None = None,
@@ -570,7 +571,7 @@ def setup_ui_routes(app) -> None:
                               message: str | None = None,
                               kind: str = "success") -> HTMLResponse:
         """Just the files section, which is what its own controls swap."""
-        status, payload = await _call(request, "get", f"{API}/{equipment_id}/files")
+        status, payload = await _call(request, "GET", f"{API}/{equipment_id}/files")
         if status == 401:
             return _login_fragment()
         if status != 200:
@@ -653,7 +654,7 @@ def setup_ui_routes(app) -> None:
     @app.post("/maintenance/create-blank")
     async def maintenance_create_blank(request: Request):
         """Add is one click: create a real record and open it (the core pattern)."""
-        status, payload = await _call(request, "post", API, json={})
+        status, payload = await _call(request, "POST", API, json={})
         if status == 401:
             return _login_fragment()
         if status not in (200, 201) or not payload.get("id"):
@@ -667,7 +668,7 @@ def setup_ui_routes(app) -> None:
     async def maintenance_mark_serviced(request: Request):
         form = await request.form()
         ids = [str(i) for i in form.getlist("selected") if i]
-        status, payload = await _call(request, "post", f"{API}/mark-serviced",
+        status, payload = await _call(request, "POST", f"{API}/mark-serviced",
                                       json={"ids": ids})
         if status == 401:
             return _login_fragment()
@@ -683,7 +684,7 @@ def setup_ui_routes(app) -> None:
 
     @app.delete("/maintenance/{equipment_id}/service-log/{log_id}")
     async def maintenance_undo_service(request: Request, equipment_id: str, log_id: str):
-        status, payload = await _call(request, "delete",
+        status, payload = await _call(request, "DELETE",
                                       f"{API}/{equipment_id}/service-log/{log_id}")
         if status == 401:
             return _login_fragment()
@@ -696,7 +697,7 @@ def setup_ui_routes(app) -> None:
         return await _detail_fragment(request, equipment_id, message=message)
 
     async def _archive_or_restore(request: Request, equipment_id: str, action: str):
-        status, payload = await _call(request, "post", f"{API}/{equipment_id}/{action}")
+        status, payload = await _call(request, "POST", f"{API}/{equipment_id}/{action}")
         if status == 401:
             return _login_fragment()
         if status != 200:
@@ -767,7 +768,7 @@ def setup_ui_routes(app) -> None:
             return HTMLResponse("", status_code=404)
         form = await request.form()
         value = form.get("value", "")
-        status, payload = await _call(request, "patch",
+        status, payload = await _call(request, "PATCH",
                                       f"{API}/{equipment_id}/field/{field}",
                                       json={"value": value})
         if status == 401:
@@ -799,11 +800,12 @@ def setup_ui_routes(app) -> None:
         if upload is None or not getattr(upload, "filename", ""):
             return await _files_fragment(request, equipment_id, kind="error",
                                          message="Choose a file to upload")
+        # api_request carries JSON, so the bytes travel base64-encoded.
         content = await upload.read()
         status, payload = await _call(
-            request, "post", f"{API}/{equipment_id}/files",
-            files={"file": (upload.filename, content,
-                            upload.content_type or "application/octet-stream")})
+            request, "POST", f"{API}/{equipment_id}/files",
+            json={"filename": upload.filename, "content_type": upload.content_type,
+                  "content": base64.b64encode(content).decode("ascii")})
         if status == 401:
             return _login_fragment()
         if status != 200:
@@ -819,7 +821,7 @@ def setup_ui_routes(app) -> None:
 
     @app.delete("/maintenance/{equipment_id}/files/{file_id}")
     async def files_delete(request: Request, equipment_id: str, file_id: str):
-        status, payload = await _call(request, "delete",
+        status, payload = await _call(request, "DELETE",
                                       f"{API}/{equipment_id}/files/{file_id}")
         if status == 401:
             return _login_fragment()
@@ -834,8 +836,7 @@ def setup_ui_routes(app) -> None:
     async def files_download(request: Request, equipment_id: str, file_id: str):
         """The bytes come through the module, so the storage path stays server side."""
         try:
-            async with _api(request) as c:
-                r = await c.get(f"{API}/{equipment_id}/files/{file_id}/download")
+            r = await api_request(request, "GET", f"{API}/{equipment_id}/files/{file_id}/download")
         except Exception as exc:  # noqa: BLE001
             log.warning("maintenance: download failed: %s", exc)
             return HTMLResponse("The file could not be read", status_code=502)

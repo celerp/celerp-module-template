@@ -38,7 +38,9 @@ see other installed modules:
     and a module with migrations sets one
   - every table the module's code or migrations name starts with its table_prefix
   - no source file imports a protected celerp internal (revenue-gated; the
-    loader rejects modules that do)
+    loader rejects modules that do); celerp.modules.api is the public surface
+  - the module ships no requirements.txt: Celerp installs no Python packages for
+    a module, so a module uses the dependencies Celerp already has
   - no fragment is rendered with str(); FT.__str__ returns the element id, so
     that sends the browser a word where its markup should be
 
@@ -60,10 +62,7 @@ import sys
 from pathlib import Path
 
 # Kept in sync with celerp/modules/loader.py _PROTECTED_BSL_INTERNALS.
-PROTECTED = {
-    "celerp.session_gate", "celerp.ai.service", "celerp.ai.quota",
-    "celerp.gateway", "celerp.connectors",
-}
+PROTECTED = {"celerp.session_gate", "celerp.ai", "celerp.gateway", "celerp.connectors"}
 REQUIRED_FIELDS = ("name", "version", "display_name", "license")
 # The longest module name Celerp accepts (celerp/modules/importer.py _NAME_MAX).
 NAME_MAX = 64
@@ -146,8 +145,8 @@ RESERVED_TABLES = frozenset({
     "bank_accounts", "bank_statement_lines", "companies", "connector_configs",
     "connector_sources", "doc_share_tokens", "import_batches", "instance_meta",
     "label_templates", "ledger", "locations", "marketplace_configs",
-    "migration_cleanup_tasks", "migration_entity_maps", "migration_runs", "notifications",
-    "outbound_queue", "payment_closures", "payment_recoveries", "projections",
+    "migration_cleanup_tasks", "migration_entity_maps", "migration_runs", "notification_reads",
+    "notifications", "outbound_queue", "payment_closures", "payment_recoveries", "projections",
     "reconciliation_rules", "reconciliation_sessions", "session_registry",
     "supporter_badges", "sync_runs", "system_runtime_state", "unmatched_payments",
     "unmatched_refunds", "user_auth_state", "user_companies", "users", "work_centers",
@@ -958,12 +957,17 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
     problems.extend(_slot_problems(manifest, folder))
     problems.extend(_company_backup_problems(manifest, folder))
 
+    for path in sorted(folder.rglob("*")):
+        if path.name.lower() == "requirements.txt":
+            problems.append(f"{path.relative_to(folder)}: Celerp modules use Celerp's installed "
+                            "dependencies, and Celerp installs nothing from a requirements.txt "
+                            "- remove it")
     for py_file in folder.rglob("*.py"):
         rel = py_file.relative_to(folder)
         hits = _protected_imports(py_file)
         for h in sorted(hits):
             problems.append(f"{rel}: imports protected internal {h!r} "
-                            "- the loader will reject this module")
+                            "- the loader will reject this module; use celerp.modules.api")
         lines = _str_rendered_fragments(py_file)
         if lines:
             problems.append(f"{rel}: renders a fragment with str() at line(s) "

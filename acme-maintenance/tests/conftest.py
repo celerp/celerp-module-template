@@ -3,9 +3,9 @@
 
 A module has two halves that talk over HTTP: the API router mounted on Celerp's
 FastAPI app, and the UI routes mounted on its FastHTML app. This harness stands
-both up in-process against SQLite and wires the UI's outbound client straight
-into the API app, so a request to `/maintenance` exercises the real render path,
-the real proxy call, and the real database write with nothing mocked in between.
+both up in-process against SQLite and wires Celerp's api_request straight into
+the API app, so a request to `/maintenance` exercises the real render path, the
+real api_request call, and the real database write with nothing mocked in between.
 
 Copying this file into your own module is the intended use. The three things to
 change are the imports at the top, `MODULE_TABLE_PREFIX`, and the stub company
@@ -18,6 +18,7 @@ import json
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -99,6 +100,12 @@ class Env:
         self.inject = inject
         self._engine = sync_engine
         self._acting = acting
+
+    def upload(self, equipment_id: str, filename: str, content: bytes, content_type: str):
+        """POST a file to the API the way the UI sends it: JSON, bytes base64-encoded."""
+        return self.api.post(f"/api/maintenance/equipment/{equipment_id}/files", json={
+            "filename": filename, "content_type": content_type,
+            "content": base64.b64encode(content).decode("ascii")})
 
     @contextmanager
     def as_company(self, company_id):
@@ -302,13 +309,17 @@ def make_env(tmp_path, monkeypatch):
         wrapped_api = _FailInjector(api, inject)
         transport = httpx.ASGITransport(app=wrapped_api)
 
-        def _api_override(request):
-            token = request.cookies.get(COOKIE_NAME)
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            return httpx.AsyncClient(transport=transport, base_url="http://api",
-                                     headers=headers, timeout=5)
+        # api_request is Celerp's own: it checks the path, signs the call in with the
+        # session cookie and builds its client. Only the client's transport is
+        # swapped, so the call lands in the API app above instead of on a socket.
+        import celerp.modules.api as module_api
 
-        monkeypatch.setattr(ui_routes, "_api", _api_override)
+        class _InProcessClient(httpx.AsyncClient):
+            def __init__(self, **kwargs):
+                super().__init__(transport=transport, **kwargs)
+
+        monkeypatch.setattr(module_api, "httpx",
+                            SimpleNamespace(AsyncClient=_InProcessClient, Response=httpx.Response))
 
         # base_shell fetches company settings over the network when it is not
         # given any. The module passes its own, so this only guards the chrome

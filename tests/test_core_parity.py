@@ -22,7 +22,9 @@ does, so a checkout without Celerp 2.5.4 can never pass by skipping.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
+import inspect
 import itertools
 import os
 import pathlib
@@ -37,7 +39,7 @@ lint = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lint)
 
 try:
-    from celerp.modules import importer, loader, slots
+    from celerp.modules import api as module_api, importer, loader, slots
     from celerp.services import permissions
     from fastapi import FastAPI
     CORE = hasattr(loader, "admit_modules") and hasattr(importer, "reserved_tables")
@@ -420,6 +422,8 @@ class TestCoreParity(unittest.TestCase):
             cases.append(case(f"{{pkg}}.bad:{fn}", protected))
             cases.append(case(f"{{pkg}}.sub:{fn}",
                               {"{pkg}/sub.py": "from celerp.ai import quota\n" + HOOKS}))
+            cases.append(case(f"{{pkg}}.llm:{fn}",
+                              {"{pkg}/llm.py": "from celerp.ai import llm\n" + HOOKS}))
             cases.append(case(f"{{pkg}}.dyn:{fn}",
                               {"{pkg}/dyn.py": "import importlib\nimportlib.import_module('celerp.gateway')\n" + HOOKS}))
             cases.append(_slot_case(slot, {**base, key: f"{{pkg}}.linked:{fn}"}, files,
@@ -620,6 +624,35 @@ class TestCoreParity(unittest.TestCase):
                 disagree.append((manifest, lint_refuses, core))
         self.assertEqual(disagree, [], "(manifest, lint refuses, celerp refuses)")
         self.assertTrue(0 < refused < total)
+
+    def test_public_module_helpers(self):
+        """The three helpers the guide documents and the example calls, as Celerp
+        defines them, and every call the example makes binds to Celerp's signature."""
+        empty, positional, keyword = (inspect.Parameter.empty, inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                      inspect.Parameter.KEYWORD_ONLY)
+        expected = {
+            "api_request": (True, [("request", positional, empty), ("method", positional, empty),
+                                   ("path", positional, empty), ("json", keyword, None),
+                                   ("params", keyword, None)]),
+            "read_resource": (False, [("module_file", positional, empty),
+                                      ("relative_path", positional, empty)]),
+            "ai_query": (True, [("query", positional, empty), ("company_id", positional, empty),
+                                ("session_token", positional, None), ("db_session", positional, None)]),
+        }
+        for name, (awaited, params) in expected.items():
+            fn = getattr(module_api, name)
+            self.assertEqual(inspect.iscoroutinefunction(fn), awaited, name)
+            self.assertEqual([(p.name, p.kind, p.default)
+                              for p in inspect.signature(fn).parameters.values()], params, name)
+        calls = 0
+        for py_file in (ROOT / "acme-maintenance" / "acme_maintenance").rglob("*.py"):
+            for node in ast.walk(ast.parse(py_file.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Call) and getattr(node.func, "id", None) in expected:
+                    calls += 1
+                    with self.subTest(file=py_file.name, line=node.lineno):
+                        inspect.signature(getattr(module_api, node.func.id)).bind(
+                            *node.args, **{k.arg: k.value for k in node.keywords})
+        self.assertGreater(calls, 0, "the example calls none of the helpers")
 
     def test_shared_constants_match(self):
         self.assertEqual(lint.PERMISSION_KEYS, set(permissions._PERMISSIONS_BY_KEY))
