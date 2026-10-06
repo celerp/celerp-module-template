@@ -26,7 +26,8 @@ see other installed modules:
     action_type the toolbar knows; category_schema fields are field definitions;
     nav href and settings_href and bulk_action form_action (required) are paths
     inside Celerp; a callable slot names a function in the module's own files,
-    async exactly where Celerp awaits it; a projection_handler names its prefix
+    async exactly where Celerp awaits it; a projection_handler names its prefix,
+    and no two of its prefixes, or one of them and one of Celerp's own, overlap
   - search_provider is one descriptor with exactly handler, result_key and permission
   - pricing_action entries have the shape the loader accepts: known keys only,
     a link that stays inside Celerp, and braces only around a placeholder
@@ -96,6 +97,9 @@ SLOT_NAMES = {
 FIRST_PARTY_SLOTS = {"inventory_in_production"}
 # The slots a module built from this template may fill.
 PUBLIC_SLOTS = SLOT_NAMES - FIRST_PARTY_SLOTS
+# The event-type prefixes Celerp projects itself. An event type has one handler: the
+# loader refuses a module whose projection_handler prefix overlaps one of these.
+KERNEL_PROJECTION_PREFIXES = {"sys.", "mp.", "shop.sync."}
 # How each table a module owns travels with a company backup.
 COMPANY_BACKUP_VALUES = {"include", "exclude"}
 # The keys a nav slot entry may carry (ui/components/shell.py builds the sidebar).
@@ -412,6 +416,34 @@ def _category_schema_problems(where: str, item: dict, folder: Path) -> list[str]
                    for k, types in CATEGORY_FIELD_KEYS.items() if k in field)]
 
 
+def _prefixes_overlap(a: str, b: str) -> bool:
+    """Whether one prefix starts with the other (slots.projection_prefixes_overlap):
+    the engine applies the first match, so the other handler would never run."""
+    return a.startswith(b) or b.startswith(a)
+
+
+def _projection_prefix_problems(slot: str, items: list, folder: Path) -> list[str]:
+    """The loader's _validate_projection_prefixes, plus the prefixes admission
+    claims for Celerp itself (_refuse_overlapping_projection_prefixes)."""
+    prefixes = [item["prefix"] for _, item in items]
+    problems = [f"Slot 'projection_handler' prefixes {a!r} and {b!r} overlap; "
+                f"each event type may have one handler only."
+                for i, a in enumerate(prefixes) for b in prefixes[i + 1:]
+                if _prefixes_overlap(a, b)]
+    problems += [f"Projection prefix {p!r} overlaps {c!r}, which 'Celerp' already handles; "
+                 f"each event type may have one handler only."
+                 for p in prefixes for c in sorted(KERNEL_PROJECTION_PREFIXES)
+                 if _prefixes_overlap(p, c)]
+    return problems
+
+
+def _each(check):
+    """A slot check over every entry, from a check of one entry."""
+    def run(slot: str, items: list, folder: Path) -> list[str]:
+        return [p for index, item in items for p in check(f"{slot} entry {index}", item, folder)]
+    return run
+
+
 def _keyword_check(slot: str):
     """The check for a slot in HANDLER_KEYWORDS: the handler's def takes exactly the
     slot's keyword arguments (the loader's _keyword_validator). A handler lint.py
@@ -436,13 +468,15 @@ def _takes_exactly(node: ast.FunctionDef | ast.AsyncFunctionDef, keywords: tuple
 
 
 # Per-slot checks beyond the generic entry rules (the loader's _SLOT_VALIDATORS),
-# each called as check(where, item, folder).
+# each called as check(slot, items, folder) with the (index, entry) pairs that pass
+# those rules.
 SLOT_CHECKS = {
-    "item_action": _item_action_problems,
-    "pricing_action": _pricing_action_problems,
-    "bulk_action": _bulk_action_problems,
-    "category_schema": _category_schema_problems,
-    **{slot: _keyword_check(slot) for slot in HANDLER_KEYWORDS},
+    "item_action": _each(_item_action_problems),
+    "pricing_action": _each(_pricing_action_problems),
+    "bulk_action": _each(_bulk_action_problems),
+    "category_schema": _each(_category_schema_problems),
+    "projection_handler": _projection_prefix_problems,
+    **{slot: _each(_keyword_check(slot)) for slot in HANDLER_KEYWORDS},
 }
 
 
@@ -523,17 +557,19 @@ def _slot_problems(manifest: dict, folder: Path) -> list[str]:
             problems += _search_provider_problems(folder, contribution)
             continue
         items = contribution if isinstance(contribution, list) else [contribution]
+        checked = []
         for index, item in enumerate(items):
             where = f"{slot} entry {index}"
             entry = _entry_problems(where, slot, item)
             problems += entry
             if entry:
                 continue
+            checked.append((index, item))
             if slot in CALLABLE_SLOTS:
                 key, awaited = CALLABLE_SLOTS[slot]
                 problems += _callable_problems(f"{where} {key}", folder, item.get(key), awaited)
-            if slot in SLOT_CHECKS:
-                problems += SLOT_CHECKS[slot](where, item, folder)
+        if slot in SLOT_CHECKS:
+            problems += SLOT_CHECKS[slot](slot, checked, folder)
     return problems
 
 

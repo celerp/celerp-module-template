@@ -186,7 +186,8 @@ class TestCoreParity(unittest.TestCase):
                     loader.register_ui_routes(FastAPI(), loaded)
                 except Exception:
                     return True  # the load pass itself failed: the module did not load
-            return folder.name in loader.load_errors()
+            # Refused, or never taken up at all (a folder name Celerp cannot resolve).
+            return folder.name not in {m["name"] for m in loader.loaded_modules()}
         finally:
             sys.path[:] = path_before
             for key in set(sys.modules) - modules_before:
@@ -293,6 +294,17 @@ class TestCoreParity(unittest.TestCase):
                        {k: v for k, v in base.items() if k != "prefix"} if value is ABSENT
                        else {**base, "prefix": value})
             for value in values)
+
+    def test_projection_handler_prefixes_overlap(self):
+        """Within the module, and against the prefixes Celerp projects itself."""
+        base = _base("projection_handler")
+        prefix_sets = (("acme.",), ("acme.", "acme."), ("acme.", "acme.order."),
+                       ("acme.order.", "acme."), ("acme.order.", "acme.item."), ("sys.",),
+                       ("s",), ("mp.order.",), ("shop.",), ("shop.syncs.",), ("acme.", "mp."))
+        self.assertParity(
+            Case({"projection_handler": [{**base, "prefix": p} for p in prefixes]},
+                 {"{pkg}/__init__.py": "", "{pkg}/hooks.py": HOOKS})
+            for prefixes in prefix_sets)
 
     def test_search_provider_descriptor(self):
         good = _base("search_provider")
@@ -609,7 +621,11 @@ class TestCoreParity(unittest.TestCase):
         self.assertEqual(lint.SEARCH_PROVIDER_KEYS, set(loader._SEARCH_PROVIDER_KEYS))
         self.assertEqual(lint.SEARCH_PROVIDER_RESULT_KEYS, set(loader._SEARCH_RESULT_KEYS))
         self.assertEqual(lint.SLOT_NAMES, slots.SLOT_NAMES)
-        self.assertEqual(lint.PUBLIC_SLOTS, slots.SLOT_NAMES - slots._FIRST_PARTY_SLOTS)
+        self.assertEqual(lint.FIRST_PARTY_SLOTS, slots.FIRST_PARTY_SLOTS)
+        self.assertEqual(lint.PUBLIC_SLOTS, slots.SLOT_NAMES - slots.FIRST_PARTY_SLOTS)
+        self.assertEqual(lint.KERNEL_PROJECTION_PREFIXES, slots.KERNEL_PROJECTION_PREFIXES)
+        for a, b in itertools.product(("", "a", "acme.", "acme.order.", "sys.", "sys"), repeat=2):
+            self.assertEqual(lint._prefixes_overlap(a, b), slots.projection_prefixes_overlap(a, b))
         self.assertEqual(lint.SLOT_ENTRY_KEYS, loader._SLOT_ENTRY_KEYS)
         self.assertEqual(lint.ENTRY_TYPE_NAMES, loader._TYPE_NAMES)
         self.assertEqual(lint.BULK_ACTION_TYPES, loader._BULK_ACTION_TYPES)

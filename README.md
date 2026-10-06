@@ -222,7 +222,11 @@ only. It also refuses a module whose slot entries break any of these:
   `//`, no backslash and no control character): `nav` `href` and
   `settings_href`, `bulk_action` `form_action` (required), and `item_action`
   `href_template`.
-- A `projection_handler` entry names its event-type `prefix`.
+- A `projection_handler` entry names its event-type `prefix`. Each event type has one
+  handler, so no prefix may start with another: not two of your module's, not one
+  another enabled module already handles, and not Celerp's own `sys.`, `mp.` or
+  `shop.sync.`. Celerp's own modules claim their prefixes first, then other modules
+  in name order; a module whose prefix overlaps one already claimed is refused.
 - A slot that names code to run (`handler`, or `render` for `doc_detail_actions`
   and `doc_detail_badges`) gives one `module:function` that resolves to a
   callable in your module's own files. It is an `async def` exactly where Celerp

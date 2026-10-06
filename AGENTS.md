@@ -100,7 +100,9 @@ links to (`nav` `href` and `settings_href`, `bulk_action` `form_action`, which i
 required, and `item_action` `href_template`) is a path inside Celerp: one leading
 `/`, never `//`, no backslash and no control character
 (`celerp/services/app_paths.py:12`). A `projection_handler` `prefix` is a non-empty
-string. A slot that names code to run (its `handler`, or `render` for the
+string, and no prefix starts with another: within the module, across enabled
+modules, or against Celerp's own `sys.`, `mp.` and `shop.sync.`
+(`celerp/modules/slots.py`, `KERNEL_PROJECTION_PREFIXES`). A slot that names code to run (its `handler`, or `render` for the
 `doc_detail_*` slots) gives one `module:function` that resolves to a callable in
 this module's own files, async exactly where Celerp awaits it (`celerp/modules/loader.py:2167`).
 The `item_lineage_guard` handler is called with keyword arguments only, so it

@@ -747,6 +747,27 @@ class TestSlotEntryRules(unittest.TestCase):
         self.assertEqual(_problems({"projection_handler": [
             {"handler": "thing.hooks:sync_fn", "prefix": "acme."}]}), [])
 
+    def test_projection_handler_prefixes_may_not_overlap(self):
+        for first, second in (("acme.", "acme."), ("acme.", "acme.order."), ("acme.order.", "acme.")):
+            with self.subTest(prefixes=(first, second)):
+                problems = _problems({"projection_handler": [
+                    {"handler": "thing.hooks:sync_fn", "prefix": first},
+                    {"handler": "thing.hooks:sync_fn", "prefix": second}]})
+                self.assertIn(f"Slot 'projection_handler' prefixes {first!r} and {second!r} "
+                              f"overlap; each event type may have one handler only.", problems)
+        self.assertEqual(_problems({"projection_handler": [
+            {"handler": "thing.hooks:sync_fn", "prefix": "acme.order."},
+            {"handler": "thing.hooks:sync_fn", "prefix": "acme.item."}]}), [])
+
+    def test_projection_handler_prefix_may_not_overlap_celerps_own(self):
+        for prefix, core in (("sys.", "sys."), ("s", "shop.sync."), ("mp.order.", "mp.")):
+            with self.subTest(prefix=prefix):
+                problems = _problems({"projection_handler": [
+                    {"handler": "thing.hooks:sync_fn", "prefix": prefix}]})
+                self.assertIn(f"Projection prefix {prefix!r} overlaps {core!r}, which 'Celerp' "
+                              f"already handles; each event type may have one handler only.",
+                              problems)
+
 
 class TestCallableSlots(unittest.TestCase):
     """A callable slot names a function in the module's own files, async exactly
