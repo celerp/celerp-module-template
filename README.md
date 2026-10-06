@@ -122,8 +122,8 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    decorated function, a star import, a `functools.partial`, a binding inside
    `if` or `try`) and a protected import in any file, used or not. It cannot see
    other installed modules or packages, so a prefix or table clash with another
-   module, or a package name an installed package already uses, only shows when
-   Celerp loads the module.
+   module, or a package name another module or an installed package already
+   uses, only shows when Celerp loads the module.
 
 ### About files
 
