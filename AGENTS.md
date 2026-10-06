@@ -9,6 +9,77 @@ line numbers from Celerp 2.5.4; the rest are in this one.
 and change the manifest; the patterns it already uses are the answer to most of the
 questions that come up next.
 
+## Building for someone with an idea
+
+Often the person you are working for describes a module in a sentence and is not a
+developer. Your job is the whole path: build the module, check it, publish it in
+their repository, and send it to Celerp's community catalog. They should never need
+a terminal or git. Explain each step in plain words, and ask them only for decisions
+that are theirs: what the module does, its name, and its license. The full guide is
+at <https://www.celerp.com/docs/modules.html>; this section is the order of work.
+
+1. **Make it theirs.** Agree a short id: lowercase letters, digits and hyphens. It
+   must not start with `celerp`, look like Celerp, or match the name or id of a
+   module already in
+   <https://github.com/celerp/community-modules/blob/main/index.json>
+   (`acme-maintenance` is taken by this template). Rename `acme-maintenance/` to the
+   id and the inner package `acme_maintenance/` to the id with underscores, then
+   update every reference: the manifest `name`, `api_routes` and `ui_routes`,
+   imports, the tests, `.github/workflows/ci.yml`, and this README. Set
+   `display_name`, `description`, `version` and `author`, then replace the
+   equipment code with what was asked for, following the eight rules below.
+2. **Say what it touches.** The module's README states which data it reads and
+   writes and which network calls it makes ("None." when it makes none); the
+   catalog entry repeats both. Keep the MIT `LICENSE` unless the person picks
+   another, and put their name or GitHub account in its copyright line. The
+   manifest `license` must be the SPDX id of that file.
+3. **Check it.** Run `python lint.py <id>`, `pytest tests`, and the module suite
+   exactly as `.github/workflows/ci.yml` runs it. Fix every failure; never skip
+   one. If you cannot install Celerp where you are running, push and read the CI
+   result instead.
+4. **Publish it.** The repository must be public. Commit and push to its default
+   branch (usually `main`): a listing points at a commit on that branch, so work
+   left on another branch cannot be listed. If you can only push a branch, open a
+   pull request into the default branch of the person's own repository, ask them
+   to press **Merge**, and continue from the merged commit.
+5. **Build the zip, if they want to try it first.** From the repository root,
+   `zip -r <id>.zip <id>/`. In Celerp, **Modules**, then **Local Modules**, then
+   **Import Module** takes that zip. GitHub's **Code**, then **Download ZIP** also
+   works, since Celerp finds the one folder that holds `PLUGIN_MANIFEST`.
+6. **Submit it.** The submission is a pull request to `celerp/community-modules`
+   opened from the GitHub account that owns the module's repository:
+   - Take the full 40-character id of the commit at the head of the default branch
+     (`git rev-parse HEAD` after the push, and check it matches GitHub).
+   - Fork `celerp/community-modules` into the person's account
+     (`gh repo fork celerp/community-modules --clone`) and branch from its `main`.
+   - Add one entry to `index.json` with `id`, `name`, `description`,
+     `"tier": "community"`, `repo` (`https://github.com/<owner>/<repository>`),
+     `commit`, `author`, `license`, `data_access` and `network_calls`, and no
+     `version`. Official entries stay first; community entries sort by `id`.
+   - Run `python3 scripts/gen_readme.py` and `python3 scripts/validate_index.py`,
+     commit `index.json` and `README.md` only, push, and open the pull request
+     against `main`. Give the person its link.
+7. **Follow it through.** An automatic listing check posts one comment on the pull
+   request and keeps it current. When every check passes, the pull request is
+   merged automatically and the module appears in the Community Modules tab of
+   every Celerp on its next catalog refresh, usually within minutes. A comment
+   headed "Listing check: changes needed" lists what to fix: fix the module, push
+   it to the default branch, set `commit` to the new head, run `gen_readme.py`
+   again, and push to the same pull request; the check runs again. "Listing check:
+   waiting for the maintainer" means something in the code was flagged for a
+   person to look at; tell them what, and wait.
+8. **New versions.** Raise `version` in the manifest, push to the default branch,
+   and submit an update the same way: a fresh branch of the fork from the current
+   `celerp/community-modules` `main`, the existing entry's `commit` set to the new
+   full commit id, `gen_readme.py` run, and a new pull request from the same
+   account. Celerp only offers the listed commit, so every version is a new
+   `commit` in the entry.
+9. **If you cannot act on GitHub as the person** (you cannot fork, push, or open a
+   pull request from where you run), do not stop at "done". Finish everything you
+   can, then give them the exact entry text, the regenerated `README.md`, and
+   numbered steps to make the same change on github.com, and say plainly which
+   steps are theirs.
+
 ## The eight rules
 
 **1. Render every fragment with `to_xml`.** fastcore's `FT.__str__` returns the
