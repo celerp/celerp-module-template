@@ -51,6 +51,11 @@ straight past (an unknown key), which is usually a typo.
 
 Usage:  python lint.py path/to/your-module-folder
 Exit 0 = clean, 1 = findings (printed).
+
+        python lint.py --find
+Prints the name of the repository's one module folder (run from the repository
+root), so CI and the tests work under whatever name the module has. Exit 1, with
+the reason, when there is no module folder or more than one.
 """
 from __future__ import annotations
 
@@ -977,6 +982,30 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
     return problems, ignored
 
 
+class ModuleFolderError(Exception):
+    """The repo does not hold exactly one module folder."""
+
+
+MANIFEST_LINE = re.compile(r"^PLUGIN_MANIFEST\s*=", re.M)
+
+
+def find_module(root: Path) -> Path:
+    """The one top-level folder of `root` whose __init__.py assigns PLUGIN_MANIFEST,
+    found by text so a manifest with a syntax error is still found and linted."""
+    found = sorted(d for d in root.iterdir()
+                   if d.is_dir() and not d.name.startswith(".")
+                   and (d / "__init__.py").is_file()
+                   and MANIFEST_LINE.search((d / "__init__.py").read_text(errors="replace")))
+    if not found:
+        raise ModuleFolderError(f"no module folder in {root}: none of its folders has an "
+                                "__init__.py with PLUGIN_MANIFEST")
+    if len(found) > 1:
+        raise ModuleFolderError(f"{len(found)} module folders ({', '.join(d.name for d in found)}): "
+                                "a repository holds one module, so delete the folders "
+                                "you replaced")
+    return found[0]
+
+
 def lint(folder: Path) -> list[str]:
     """Every finding for the module in `folder`, problems first."""
     problems, ignored = check(folder)
@@ -985,8 +1014,16 @@ def lint(folder: Path) -> list[str]:
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("usage: python lint.py path/to/your-module-folder")
+        print("usage: python lint.py path/to/your-module-folder\n"
+              "       python lint.py --find    (prints the module folder's name)")
         return 2
+    if sys.argv[1] == "--find":
+        try:
+            print(find_module(Path.cwd()).name)
+        except ModuleFolderError as exc:
+            print(f"✗ {exc}", file=sys.stderr)
+            return 1
+        return 0
     folder = Path(sys.argv[1]).resolve()
     problems, ignored = check(folder)
     if problems:

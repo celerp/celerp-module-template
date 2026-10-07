@@ -16,11 +16,12 @@ import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-MODULE = ROOT / "acme-maintenance"
-
 _spec = importlib.util.spec_from_file_location("celerp_module_lint", ROOT / "lint.py")
 lint = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lint)
+
+# The repository's one module, under whatever name it has been given.
+MODULE = lint.find_module(ROOT)
 
 
 MANIFEST = '''PLUGIN_MANIFEST = {
@@ -85,6 +86,69 @@ class TestShippedModule(unittest.TestCase):
                           if n == "API_BASE" or any(n == r or n.startswith(r + ".")
                                                     for r in raw)]
         self.assertEqual(found, [])
+
+
+class TestFindModule(unittest.TestCase):
+    """The repo holds one module under whatever name its author gave it. The tests
+    and CI find it the way Celerp does, by the folder whose __init__.py holds
+    PLUGIN_MANIFEST, so a renamed module needs no edit anywhere else."""
+
+    def _root(self, *modules: str, plain: tuple[str, ...] = ()) -> pathlib.Path:
+        root = pathlib.Path(tempfile.mkdtemp())
+        _TEMP_DIRS.append(root)
+        for name in modules:
+            (root / name).mkdir()
+            (root / name / "__init__.py").write_text(MANIFEST % (name, ""), encoding="utf-8")
+        for name in plain + ("tests", ".github"):
+            (root / name).mkdir()
+            (root / name / "__init__.py").write_text("", encoding="utf-8")
+        return root
+
+    def test_a_renamed_module_is_found(self):
+        root = self._root("visit-log", plain=("helpers",))
+        self.assertEqual(lint.find_module(root), root / "visit-log")
+
+    def test_a_manifest_with_a_syntax_error_is_still_found(self):
+        # Lint then names the syntax error, instead of CI saying there is no module.
+        root = self._root()
+        (root / "visit-log").mkdir()
+        (root / "visit-log" / "__init__.py").write_text("PLUGIN_MANIFEST = {\n", encoding="utf-8")
+        self.assertEqual(lint.find_module(root), root / "visit-log")
+
+    def test_no_module_is_named_plainly(self):
+        with self.assertRaises(lint.ModuleFolderError) as caught:
+            lint.find_module(self._root(plain=("helpers",)))
+        self.assertIn("no module folder", str(caught.exception))
+
+    def test_two_modules_are_named_plainly(self):
+        with self.assertRaises(lint.ModuleFolderError) as caught:
+            lint.find_module(self._root("acme-maintenance", "visit-log"))
+        message = str(caught.exception)
+        self.assertIn("acme-maintenance", message)
+        self.assertIn("visit-log", message)
+        self.assertIn("delete", message)
+
+    def test_cli_find_prints_the_folder_name(self):
+        import subprocess
+        import sys
+        root = self._root("visit-log")
+        run = subprocess.run([sys.executable, str(ROOT / "lint.py"), "--find"], cwd=root,
+                             capture_output=True, text=True)
+        self.assertEqual((run.returncode, run.stdout), (0, "visit-log\n"))
+
+    def test_cli_find_fails_with_the_reason(self):
+        import subprocess
+        import sys
+        root = self._root("acme-maintenance", "visit-log")
+        run = subprocess.run([sys.executable, str(ROOT / "lint.py"), "--find"], cwd=root,
+                             capture_output=True, text=True)
+        self.assertEqual((run.returncode, run.stdout), (1, ""))
+        self.assertIn("visit-log", run.stderr)
+
+    def test_ci_names_no_module_folder(self):
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertNotIn("acme", ci)
+        self.assertIn("python lint.py --find", ci)
 
 
 class TestFolderNameMatchesManifest(unittest.TestCase):

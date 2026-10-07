@@ -10,7 +10,8 @@ real api_request call, and the real database write with nothing mocked in betwee
 Copying this file into your own module is the intended use. The four things to
 change are the imports at the top, the module name passed to `load_all`,
 `MODULE_TABLE_PREFIX`, and the stub company payload if your pages read fields this
-one does not.
+one does not. The `Env` helpers `upload`, `equipment` and `service_log` belong to
+the equipment code: replace or delete them along with it.
 """
 from __future__ import annotations
 

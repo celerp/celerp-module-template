@@ -6,9 +6,10 @@ on:
   pull_request:
 
 jobs:
-  # The checks that need nothing but this repo: lint.py against the shipped module,
-  # and lint.py's own tests. Fast, and the only job a fork can always run. The core
-  # parity test needs Celerp, so it runs in the module job instead.
+  # The checks that need nothing but this repo: lint.py against the module, and
+  # lint.py's own tests. Fast, and the only job a fork can always run. The core
+  # parity test needs Celerp, so it runs in the module job instead. Both jobs find
+  # the module folder with `lint.py --find`, so a renamed module needs no edit here.
   structure:
     runs-on: ubuntu-latest
     steps:
@@ -17,7 +18,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pytest pytest-xdist
-      - run: python lint.py acme-maintenance
+      - name: Find the module folder
+        run: |
+          MODULE=$(python lint.py --find)
+          echo "MODULE=$MODULE" >> "$GITHUB_ENV"
+      - run: python lint.py "$MODULE"
       - run: pytest tests -n auto -rs --ignore=tests/test_core_parity.py
 
   # The module's own suite, which needs Celerp importable: it renders the real
@@ -39,9 +44,13 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ./celerp
       - run: pip install pytest pytest-xdist aiosqlite
-      - run: pytest acme-maintenance/tests -n auto -rs
+      - name: Find the module folder
+        run: |
+          MODULE=$(python lint.py --find)
+          echo "MODULE=$MODULE" >> "$GITHUB_ENV"
+      - run: pytest "$MODULE/tests" -n auto -rs
         env:
-          PYTHONPATH: ${{ github.workspace }}/celerp:${{ github.workspace }}/acme-maintenance
+          PYTHONPATH: ${{ github.workspace }}/celerp:${{ github.workspace }}/${{ env.MODULE }}
       # lint.py's copies of Celerp's manifest rules, held to the originals. Required:
       # without Celerp importable the test fails instead of skipping.
       - run: pytest tests/test_core_parity.py -rs

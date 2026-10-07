@@ -645,7 +645,9 @@ class TestCoreParity(unittest.TestCase):
             self.assertEqual([(p.name, p.kind, p.default)
                               for p in inspect.signature(fn).parameters.values()], params, name)
         calls = 0
-        for py_file in (ROOT / "acme-maintenance" / "acme_maintenance").rglob("*.py"):
+        module = lint.find_module(ROOT)
+        for py_file in (f for f in module.rglob("*.py")
+                        if f.relative_to(module).parts[0] != "tests"):
             for node in ast.walk(ast.parse(py_file.read_text(encoding="utf-8"))):
                 if isinstance(node, ast.Call) and getattr(node.func, "id", None) in expected:
                     calls += 1

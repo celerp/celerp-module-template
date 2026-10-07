@@ -18,16 +18,42 @@ a terminal or git. Explain each step in plain words, and ask them only for decis
 that are theirs: what the module does, its name, and its license. The full guide is
 at <https://www.celerp.com/docs/modules.html>; this section is the order of work.
 
+**If you are a chat assistant working through a GitHub connector** (ChatGPT or
+Claude in a browser), you cannot run commands, so the steps below change in these
+ways:
+
+- Do the work on GitHub through the connector: create the person's repository from
+  this template, write every file in full, and commit to its default branch.
+- GitHub runs lint and the tests on every commit. Read the result through the
+  connector; if a check failed, read its log, fix the cause, and commit again. Never
+  say a check passed unless you read the green result, and never skip a failure.
+- Submit through the connector too: fork `celerp/community-modules`, change
+  `index.json` only, and open the pull request (step 6).
+- Never hand over a zip or ask the person to upload files. If the connector cannot
+  do a step, follow step 9.
+
 1. **Make it theirs.** Agree a short id: lowercase letters, digits and hyphens. It
    must not start with `celerp`, look like Celerp, or match the name or id of a
    module already in
    <https://github.com/celerp/community-modules/blob/main/index.json>
    (`acme-maintenance` is taken by this template). Rename `acme-maintenance/` to the
-   id and the inner package `acme_maintenance/` to the id with underscores, then
-   update every reference: the manifest `name`, `api_routes` and `ui_routes`,
-   imports, the tests, `.github/workflows/ci.yml`, and this README. Set
-   `display_name`, `description`, `version` and `author`, then replace the
-   equipment code with what was asked for, following the eight rules below.
+   id and the inner package `acme_maintenance/` to the id with underscores. The
+   folder you replace must be deleted, not left beside the new one: the checks find
+   the one folder whose `__init__.py` defines `PLUGIN_MANIFEST` and stop if there
+   are two. Then rename everything that still carries the template's names:
+   - the manifest `name`, `api_routes` and `ui_routes`, imports, and the tests;
+   - `table_prefix` (`acme_`), to a prefix built from the new id, and every
+     `__tablename__` in `models.py` to start with it;
+   - the table names inside the files in `migrations/`;
+   - every table key in `company_backup`;
+   - the nav entry's `key` and `href` (`maintenance`, `/maintenance`) and every
+     link to them;
+   - this README's title and text.
+
+   Two modules that share a table prefix cannot both be installed, so a module that
+   keeps `acme_` clashes with every other one that did. Set `display_name`,
+   `description`, `version` and `author`, then replace the equipment code with what
+   was asked for, following the eight rules below.
 2. **Say what it touches.** The module's README states which data it reads and
    writes and which network calls it makes ("None." when it makes none); the
    catalog entry repeats both. Keep the MIT `LICENSE` unless the person picks
@@ -35,50 +61,52 @@ at <https://www.celerp.com/docs/modules.html>; this section is the order of work
    manifest `license` must be the SPDX id of that file.
 3. **Check it.** Run `python lint.py <id>`, `pytest tests`, and the module suite
    exactly as `.github/workflows/ci.yml` runs it. Fix every failure; never skip
-   one. If you cannot install Celerp where you are running, push and read the CI
-   result instead.
-4. **Publish it.** The repository must be public. Commit and push to its default
-   branch (usually `main`): a listing points at a commit on that branch, so work
-   left on another branch cannot be listed. If you can only push a branch, open a
-   pull request into the default branch of the person's own repository, ask them
-   to press **Merge**, and continue from the merged commit.
-5. **Build the zip, if they want to try it first.** From the repository root,
-   `zip -r <id>.zip <id>/`. In Celerp, **Modules**, then **Installed Modules**, then
-   **Import Module** takes that zip. GitHub's **Code**, then **Download ZIP** also
-   works, since Celerp finds the one folder that holds `PLUGIN_MANIFEST`.
+   one. If you cannot run commands (a chat assistant), commit and read the CI
+   result on that commit instead, as described above.
+4. **Publish it.** The repository must be public. Commit to its default branch
+   (usually `main`): a listing points at a commit on that branch, so work left on
+   another branch cannot be listed. If you can only push a branch, open a pull
+   request into the default branch of the person's own repository, ask them to
+   press **Merge**, and continue from the merged commit.
+5. **Build the zip, if they want to try it first** (terminal only). From the
+   repository root, `zip -r <id>.zip <id>/`. In Celerp, **Modules**, then
+   **Installed Modules**, then **Import Module** takes that zip. A chat assistant
+   skips this step: the person installs the module from the catalog once it is
+   listed.
 6. **Submit it.** The submission is a pull request to `celerp/community-modules`
-   opened from the GitHub account that owns the module's repository:
+   opened from the GitHub account that owns the module's repository. It changes
+   `index.json` only; the catalog's `README.md` is rebuilt after merge.
    - Take the full 40-character id of the commit at the head of the default branch
-     (`git rev-parse HEAD` after the push, and check it matches GitHub).
-   - Fork `celerp/community-modules` into the person's account
-     (`gh repo fork celerp/community-modules --clone`) and branch from its `main`.
+     (terminal: `git rev-parse HEAD` after the push, and check it matches GitHub;
+     chat: read it through the connector).
+   - Fork `celerp/community-modules` into the person's account (terminal:
+     `gh repo fork celerp/community-modules --clone`) and branch from its `main`.
    - Add one entry to `index.json` with `id`, `name`, `description`,
      `"tier": "community"`, `repo` (`https://github.com/<owner>/<repository>`),
      `commit`, `author`, `license`, `data_access` and `network_calls`, and no
      `version`. Official entries stay first; community entries sort by `id`.
-   - Run `python3 scripts/gen_readme.py` and `python3 scripts/validate_index.py`,
-     commit `index.json` and `README.md` only, push, and open the pull request
-     against `main`. Give the person its link.
+     From a terminal, `python3 scripts/validate_index.py` checks it.
+   - Commit `index.json`, and open the pull request against `main`. Give the
+     person its link.
 7. **Follow it through.** An automatic listing check posts one comment on the pull
    request and keeps it current. When every check passes, the pull request is
    merged automatically and the module appears in the Community Modules tab of
-   every Celerp on its next catalog refresh, usually within minutes. A comment
-   headed "Listing check: changes needed" lists what to fix: fix the module, push
-   it to the default branch, set `commit` to the new head, run `gen_readme.py`
-   again, and push to the same pull request; the check runs again. "Listing check:
-   waiting for the maintainer" means something in the code was flagged for a
-   person to look at; tell them what, and wait.
-8. **New versions.** Raise `version` in the manifest, push to the default branch,
-   and submit an update the same way: a fresh branch of the fork from the current
-   `celerp/community-modules` `main`, the existing entry's `commit` set to the new
-   full commit id, `gen_readme.py` run, and a new pull request from the same
-   account. Celerp only offers the listed commit, so every version is a new
-   `commit` in the entry.
-9. **If you cannot act on GitHub as the person** (you cannot fork, push, or open a
-   pull request from where you run), do not stop at "done". Finish everything you
-   can, then give them the exact entry text, the regenerated `README.md`, and
-   numbered steps to make the same change on github.com, and say plainly which
-   steps are theirs.
+   every Celerp on its next catalog refresh. A comment headed "Listing check:
+   changes needed" lists what to fix: fix the module, commit it to the default
+   branch, and set `commit` in the same pull request's `index.json` to the new head;
+   the check runs again. "Listing check: waiting for the maintainer" means
+   something in the code was flagged for a person to look at; tell them what, and
+   wait.
+8. **New versions.** Raise `version` in the manifest, commit to the default branch,
+   and submit an update the same way: first bring the fork's `main` up to date
+   with `celerp/community-modules` `main` (GitHub's **Sync fork**), branch from it,
+   set the existing entry's `commit` to the new full commit id, and open a new pull
+   request from the same account. Celerp only offers the listed commit, so every
+   version is a new `commit` in the entry.
+9. **If you cannot do a step** (the connector cannot create the repository, commit,
+   read the checks, fork, or open the pull request), do not stop at "done" and do
+   not hand over files. Tell the person which step you could not do and why, and
+   stop there.
 
 ## The eight rules
 
@@ -268,16 +296,16 @@ module uses both.
 Three of these rules are enforced, so a mistake surfaces before a restart rather
 than in front of a user:
 
-- Rule 1 and rule 5 are checked by `lint.py:768` and `lint.py:317`, the slot
-  and table rules above by `lint.py:546` and `lint.py:880`, the package name rule by
-  `lint.py:861`, and the route module and migrations rules by `lint.py:722` and
-  `lint.py:748`. `tests/test_core_parity.py`
+- Rule 1 and rule 5 are checked by `lint.py:773` and `lint.py:322`, the slot
+  and table rules above by `lint.py:551` and `lint.py:885`, the package name rule by
+  `lint.py:866`, and the route module and migrations rules by `lint.py:727` and
+  `lint.py:753`. `tests/test_core_parity.py`
   loads each case through Celerp's own loader and fails wherever lint and the loader
   disagree. Run
   `python lint.py acme-maintenance` (or your renamed folder) before every restart.
 - Rule 2 is checked by a test that renders every view and fails on any class core
   neither styles nor emits: `acme-maintenance/tests/test_render.py:344`.
-- The protected-import rule above is checked by `lint.py` as well (`lint.py:264`),
+- The protected-import rule above is checked by `lint.py` as well (`lint.py:269`),
   so you find out before a restart rather than from a module that will not load,
   and so is a shipped `requirements.txt`. `tests/test_core_parity.py` also checks
   that the three helpers keep the signatures this module calls them with.
@@ -319,14 +347,14 @@ Each `path:line` above, with the exact text of that line. Paths under `celerp/` 
 - `celerp/modules/migrations_runner.py:167`: `async def run_migration_phase(engine, admission: loader.Admission) -> loader.Admission:`
 - `celerp/services/app_paths.py:12`: `def is_app_local_path(path) -> bool:`
 - `celerp/services/permissions.py:56`: `PERMISSIONS: list[Permission] = [`
-- `lint.py:264`: `def _protected_imports(py_file: Path) -> set[str]:`
-- `lint.py:317`: `def _ignored_parts(manifest: dict) -> list[str]:`
-- `lint.py:546`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:722`: `def _route_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:748`: `def _migrations_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:768`: `def _str_rendered_fragments(py_file: Path) -> list[str]:`
-- `lint.py:861`: `def _import_name_problems(folder: Path) -> list[str]:`
-- `lint.py:880`: `def _table_prefix_problems(manifest: dict) -> list[str]:`
+- `lint.py:269`: `def _protected_imports(py_file: Path) -> set[str]:`
+- `lint.py:322`: `def _ignored_parts(manifest: dict) -> list[str]:`
+- `lint.py:551`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:727`: `def _route_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:753`: `def _migrations_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:773`: `def _str_rendered_fragments(py_file: Path) -> list[str]:`
+- `lint.py:866`: `def _import_name_problems(folder: Path) -> list[str]:`
+- `lint.py:885`: `def _table_prefix_problems(manifest: dict) -> list[str]:`
 - `ui/components/files.py:72`: `def files_section(`
 - `ui/components/shell.py:2376`: `def _allowed(item: dict) -> bool:`
 - `ui/components/shell.py:2571`: `def page_header(title: str, *actions: FT) -> FT:`
