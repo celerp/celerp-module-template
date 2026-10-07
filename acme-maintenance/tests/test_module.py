@@ -24,6 +24,8 @@ CITATION_RE = re.compile(r"`([A-Za-z0-9_./-]+\.(?:py|css|js|md)):(\d+)`")
 # line that moves fails the check instead of silently pointing at its neighbour.
 ANCHOR_HEADING = "## Citation anchors"
 ANCHOR_RE = re.compile(r"^- `([A-Za-z0-9_./-]+):(\d+)`: `(.*)`$", re.MULTILINE)
+# The folder this template ships; AGENTS.md cites its lines.
+TEMPLATE_MODULE = "acme-maintenance"
 
 
 def _manifest() -> dict:
@@ -83,13 +85,20 @@ def test_due_logic_and_status():
 
 
 def _citation_problems(text: str, roots: tuple[Path, ...], core_root: Path | None,
-                       core_is_254: bool) -> list[str]:
+                       core_is_254: bool, module: str = TEMPLATE_MODULE) -> list[str]:
     """Every `path:line` in `text` must name a line of code whose text is its
     anchor, and every anchor must belong to a citation. Celerp paths cite 2.5.4
-    lines, so they are resolved only when `core_is_254`."""
+    lines, so they are resolved only when `core_is_254`. Citations of the
+    template's own module are checked only while `module` is still that module:
+    a renamed module replaced that code on purpose."""
     body, _, anchor_block = text.partition(ANCHOR_HEADING)
     anchors = {(rel, n): a for rel, n, a in ANCHOR_RE.findall(anchor_block)}
     cited = set(CITATION_RE.findall(body))
+    if module != TEMPLATE_MODULE:
+        def own(rel: str) -> bool:
+            return rel.startswith(TEMPLATE_MODULE + "/")
+        anchors = {k: a for k, a in anchors.items() if not own(k[0])}
+        cited = {c for c in cited if not own(c[0])}
     problems = [f"{rel}:{n} (anchor for no citation)" for rel, n in sorted(anchors.keys() - cited)]
     for rel, line_no in sorted(cited):
         anchor = anchors.get((rel, line_no))
@@ -129,7 +138,8 @@ def test_agents_md_citations_resolve():
     text = agents.read_text()
     citations = CITATION_RE.findall(text.partition(ANCHOR_HEADING)[0])
     assert len(citations) >= 5, f"AGENTS.md cites almost nothing: {citations}"
-    broken = _citation_problems(text, (REPO_ROOT, core_root), core_root, core_is_254)
+    broken = _citation_problems(text, (REPO_ROOT, core_root), core_root, core_is_254,
+                                MODULE_DIR.name)
     assert broken == [], f"AGENTS.md citations that do not resolve: {broken}"
 
 
@@ -157,3 +167,22 @@ def test_citation_check_accepts_a_matching_anchor(tmp_path):
     (tmp_path / "m.py").write_text("def kept():\n    return 1\n")
     text = _MOVED.replace("m.py:1", "m.py:2")
     assert _citation_problems(text, (tmp_path,), None, True) == []
+
+
+_TEMPLATE_CITED = ("See `acme-maintenance/m.py:1`.\n\n"
+                   "## Citation anchors\n\n"
+                   "- `acme-maintenance/m.py:1`: `return 1`\n")
+
+
+def test_citations_of_the_template_module_skip_a_renamed_module(tmp_path):
+    """AGENTS.md cites the template's own module. Once an author renames the
+    folder those lines describe code that is gone by design, so the module's own
+    suite must not fail on them."""
+    assert _citation_problems(_TEMPLATE_CITED, (tmp_path,), None, True,
+                              module="visit-log") == []
+
+
+def test_citations_of_the_template_module_are_checked_in_the_template(tmp_path):
+    problems = _citation_problems(_TEMPLATE_CITED, (tmp_path,), None, True,
+                                  module="acme-maintenance")
+    assert any("acme-maintenance/m.py:1 (no such file)" in p for p in problems), problems
