@@ -1253,7 +1253,9 @@ class TestReachableSources(unittest.TestCase):
                       {"thing/hooks.py": "from .sub.deep import x\n" + HOOKS,
                        "thing/sub/__init__.py": "def x(:\n", "thing/sub/deep.py": "x = 1\n"},
                       {"thing/hooks.py": "import thing.helper\n" + HOOKS,
-                       "thing/helper.py": "from .more import y\n", "thing/more.py": "y = (\n"}):
+                       "thing/helper.py": "from .more import y\n", "thing/more.py": "y = (\n"},
+                      {"thing/hooks.py": "def later():\n    from . import helper\n\n\n" + HOOKS,
+                       "thing/helper.py": "def x(:\n"}):
             with self.subTest(files=sorted(files)):
                 problems = _problems({"doc_detail_actions": [{"render": "thing.hooks:sync_fn"}]},
                                      files)

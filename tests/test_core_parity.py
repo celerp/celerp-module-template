@@ -129,6 +129,9 @@ def _base(slot: str) -> dict:
     return entry
 
 
+LATER = "\n\ndef later():\n    from . import helper\n    return helper\n\n\n"
+
+
 def _slot_case(slot: str, entry, files=None, links=None) -> Case:
     """`entry` in `slot`, shaped as that slot takes it (search_provider: one dict)."""
     return Case({slot: entry if slot == "search_provider" else [entry]},
@@ -634,7 +637,8 @@ class TestCoreParity(unittest.TestCase):
 
     def test_imported_files_parse(self):
         """Every file of the module's own that the code Celerp runs imports, directly
-        or not, must parse; a file nothing imports is never run."""
+        or not, must parse, even one imported only inside a function that has not
+        run yet; a file nothing imports is never run."""
         cases = []
         for slot in sorted(lint.CALLABLE_SLOTS):
             key, awaited = lint.CALLABLE_SLOTS[slot]
@@ -650,7 +654,9 @@ class TestCoreParity(unittest.TestCase):
                           {"{pkg}/hooks.py": "from . import helper\n" + HOOKS,
                            "{pkg}/helper.py": "x = 1\n", "{pkg}/scratch.py": "def x(:\n"},
                           {"{pkg}/hooks.py": "from .sub.deep import x\n" + HOOKS,
-                           "{pkg}/sub/__init__.py": "", "{pkg}/sub/deep.py": "x = 1\n"}):
+                           "{pkg}/sub/__init__.py": "", "{pkg}/sub/deep.py": "x = 1\n"},
+                          {"{pkg}/hooks.py": LATER + HOOKS, "{pkg}/helper.py": "def x(:\n"},
+                          {"{pkg}/hooks.py": LATER + HOOKS, "{pkg}/helper.py": "x = 1\n"}):
                 cases.append(_slot_case(slot, entry, files))
         routes = "from . import helper\n\n\ndef setup_ui_routes(app):\n    pass\n"
         for helper in ("x = (\n", "x = 1\n"):
