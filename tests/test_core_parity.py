@@ -1,0 +1,893 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""lint.py against Celerp itself, rule by rule, over one shared set of modules.
+
+lint.py copies the rules Celerp enforces when it loads and installs a module,
+because it runs without Celerp installed. This test runs where Celerp 2.5.4 is
+importable and holds the copy to the original. Every case is a real module folder
+on disk. Celerp takes it through the path it boots with: admission before any of
+the module's code or migrations run (identity, route sources, the migrations
+package, protected imports), then load_all (import, every slot rule, callable
+resolution and provenance), then API and UI route registration (the setup
+functions' provenance), or, for table_prefix and the reserved celerp- name
+prefix, through its install check. lint.py checks the same folder.
+For every rule, both must accept the same modules and refuse the same modules,
+and each rule's cases include both kinds.
+
+lint.py's "ignored" findings (manifest parts Celerp reads straight past) are not
+refusals, so only its problems are compared.
+
+Set CELERP_PARITY_REQUIRED=1 to fail instead of skip when Celerp is missing; CI
+does, so a checkout without Celerp 2.5.4 can never pass by skipping.
+"""
+from __future__ import annotations
+
+import ast
+import importlib.util
+import inspect
+import itertools
+import os
+import pathlib
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+_spec = importlib.util.spec_from_file_location("celerp_module_lint", ROOT / "lint.py")
+lint = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(lint)
+
+try:
+    from celerp.modules import api as module_api, importer, loader, slots
+    from celerp.services import permissions
+    from fastapi import FastAPI
+    CORE = hasattr(loader, "admit_modules") and hasattr(importer, "reserved_tables")
+except ImportError:
+    CORE = False
+if not CORE and os.environ.get("CELERP_PARITY_REQUIRED"):
+    raise RuntimeError("CELERP_PARITY_REQUIRED is set but Celerp 2.5.4 is not importable")
+
+ABSENT = object()
+# Every shape a manifest literal can take.
+SHAPES = ({}, [], [{}], [[]], [1, None], 0, 1, 1.5, None, True, False, "", "x",
+          {1: "x", "y": []}, ("x",))
+PATHS = (
+    "/q", "/q/a?b=c", "/café", "", "q", "//evil.example", "/\\evil.example", "/a\x01", "/a\x7f",
+    "/a\n", "https://x.example", "javascript:alert(1)",
+) + SHAPES
+ROUTES = {"{pkg}/__init__.py": "",
+          "{pkg}/ui_routes.py": "def setup_ui_routes(app):\n    pass\n"}
+HOOKS = (
+    "def sync_fn(*args, **kwargs):\n    return None\n\n\n"
+    "async def async_fn(*args, **kwargs):\n    return None\n\n\n"
+    "class Klass:\n    pass\n\n\n"
+    "lam = lambda *args, **kwargs: None\n"
+    "VALUE = 5\n"
+    "async def item_lineage_guard(*, session, entry, transition):\n    return None\n\n\n"
+)
+# Handler signatures for the slots Celerp calls with keyword arguments only.
+SIGNATURES = (
+    "*, {kw}", "{kw}", "{rev}", "*, {kw}, extra=None", "*, {kw}, **more", "*args, {kw}",
+    "{kw}, /", "*, {short}", "*, db, {short}", "*a, **k", "", "{kw}, *, more",
+)
+
+
+_RESERVED_NAMES = "'celerp-' or 'celerp_', in any letter case, are reserved for Marketplace modules"
+
+
+class Case:
+    """One module: a slots manifest, extra manifest fields and source files. Strings
+    in all three may say {pkg}, the module's inner package name. `links` maps a path
+    in the module to a link to a file (text) or folder (dict of files) outside it;
+    `name` replaces the generated module name, folder included; `init` is the
+    module's __init__.py, with {manifest} where the manifest assignment goes; and
+    `unreadable` lists paths in the module no one may read."""
+
+    def __init__(self, slots_value=ABSENT, files=None, links=None, name=None, init=None,
+                 unreadable=(), **fields):
+        self.slots_value, self.files, self.fields = slots_value, files or {}, fields
+        self.links, self.name, self.init, self.unreadable = links or {}, name, init, unreadable
+
+    def __repr__(self):
+        return (f"Case(slots={self.slots_value!r}, files={self.files!r}, "
+                f"links={sorted(self.links)}, name={self.name!r}, init={self.init!r}, "
+                f"unreadable={self.unreadable!r}, {self.fields!r})")
+
+
+def _fill(value, pkg: str):
+    """value with {pkg} filled in every string, keys included."""
+    if isinstance(value, str):
+        return value.replace("{pkg}", pkg)
+    if isinstance(value, dict):
+        return {_fill(k, pkg): _fill(v, pkg) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fill(v, pkg) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_fill(v, pkg) for v in value)
+    return value
+
+
+def _base(slot: str) -> dict:
+    """An entry Celerp accepts for `slot`."""
+    entry = {
+        "nav": {"key": "k", "label": "L", "href": "/x"},
+        "bulk_action": {"label": "L", "form_action": "/x"},
+        "item_action": {"label": "L", "href_template": "/q/{entity_id}"},
+        "pricing_action": {"label": "L", "href_template": "/q/{entity_id}"},
+        "category_schema": {"category": "c", "fields": []},
+        "projection_handler": {"prefix": "acme."},
+        "send_to_targets": {"label": "L", "doc_type": "quotation"},
+        "catalog_channel": {"label": "L", "id": "shop"},
+        "search_provider": {"result_key": "items", "permission": "view_inventory"},
+    }.get(slot, {"label": "L"})
+    if slot in lint.HANDLER_KEYWORDS:
+        entry = {**entry, "handler": "{pkg}.hooks:" + slot}
+    elif slot in lint.CALLABLE_SLOTS:
+        key, awaited = lint.CALLABLE_SLOTS[slot]
+        entry = {**entry, key: "{pkg}.hooks:" + ("async_fn" if awaited else "sync_fn")}
+    return entry
+
+
+LATER = "\n\ndef later():\n    from . import helper\n    return helper\n\n\n"
+
+
+def _slot_case(slot: str, entry, files=None, links=None) -> Case:
+    """`entry` in `slot`, shaped as that slot takes it (search_provider: one dict)."""
+    return Case({slot: entry if slot == "search_provider" else [entry]},
+                {"{pkg}/__init__.py": "", "{pkg}/hooks.py": HOOKS, **(files or {})}, links)
+
+
+@unittest.skipUnless(CORE, "needs Celerp 2.5.4 or later importable")
+class TestCoreParity(unittest.TestCase):
+    counter = itertools.count()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self._clean_core)
+        self._clean_core()
+
+    def _clean_core(self):
+        slots.clear()
+        loader._loaded.clear()
+        loader._load_errors.clear()
+        loader._admitted.clear()
+
+    def _write(self, case: Case, flat: bool) -> tuple[pathlib.Path, str]:
+        n = next(self.counter)
+        name = case.name or (f"acmeflat{n}" if flat else f"acme-p{n}")
+        pkg = name if flat else f"acme_p{n}"
+        folder = pathlib.Path(self.tmp.name) / f"case{n}" / name
+        folder.mkdir(parents=True)
+        outside = folder.parent / "outside"
+
+        def place(rel):
+            target = folder / _fill(rel, pkg)
+            if flat and target.parent.name == pkg:
+                target = folder / target.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            return target
+
+        for rel, text in case.files.items():
+            place(rel).write_text(_fill(text, pkg), encoding="utf-8")
+        for index, (rel, content) in enumerate(case.links.items()):
+            real = outside / str(index)
+            for sub, text in (content if isinstance(content, dict) else {"": content}).items():
+                file = real / sub if sub else real.with_suffix(".py")
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(_fill(text, pkg), encoding="utf-8")
+            place(rel).symlink_to(real if isinstance(content, dict) else real.with_suffix(".py"))
+        manifest = {"name": name, "version": "0.1.0", "display_name": "Thing", "license": "MIT"}
+        manifest.update(_fill(case.fields, pkg))
+        if case.slots_value is not ABSENT:
+            manifest["slots"] = _fill(case.slots_value, pkg)
+        (folder / "__init__.py").write_text(
+            _fill(case.init or "{manifest}", pkg).replace(
+                "{manifest}", f"PLUGIN_MANIFEST = {manifest!r}\n"), encoding="utf-8")
+        for rel in case.unreadable:
+            path = place(rel)
+            path.chmod(0)
+            self.addCleanup(lambda p=path: p.exists() and p.chmod(0o700))
+        return folder, pkg
+
+    def _core_refuses(self, folder: pathlib.Path, pkg: str) -> bool:
+        path_before, modules_before = list(sys.path), set(sys.modules)
+        try:
+            with mock.patch.object(loader, "_first_party_lock", lambda: {}):
+                try:
+                    # The order main.py boots in: admit (migrations run only for an
+                    # admitted module), load, then each process's routes.
+                    admission = loader.admit_modules(folder.parent, {folder.name})
+                    loaded = loader.load_all(folder.parent, {folder.name}, admission=admission)
+                    loader.register_api_routes(FastAPI(), loaded)
+                    loader.register_ui_routes(FastAPI(), loaded)
+                except Exception:
+                    return True  # the load pass itself failed: the module did not load
+            # Refused, or never taken up at all (a folder name Celerp cannot resolve).
+            return folder.name not in {m["name"] for m in loader.loaded_modules()}
+        finally:
+            sys.path[:] = path_before
+            for key in set(sys.modules) - modules_before:
+                origin = getattr(sys.modules[key], "__file__", None) or ""
+                if key.startswith((pkg, folder.name)) or origin.startswith(self.tmp.name):
+                    sys.modules.pop(key, None)
+            self._clean_core()
+
+    def _disagreements(self, cases, flat: bool = False) -> tuple[list, int]:
+        disagree, refused = [], 0
+        for case in cases:
+            folder, pkg = self._write(case, flat)
+            lint_problems = lint.check(folder)[0]
+            core = self._core_refuses(folder, pkg)
+            refused += core
+            if bool(lint_problems) != core:
+                disagree.append((case, lint_problems, "celerp refuses" if core else "celerp loads"))
+        return disagree, refused
+
+    def assertParity(self, cases, flat: bool = False):
+        cases = list(cases)
+        disagree, refused = self._disagreements(cases, flat)
+        self.assertEqual(disagree, [], f"{len(disagree)} of {len(cases)} disagree")
+        self.assertTrue(0 < refused < len(cases),
+                        f"Celerp refused {refused} of {len(cases)}; a rule needs both kinds")
+
+    # ── the rules, one test each ──────────────────────────────────────────────
+
+    def test_every_slot_accepts_its_base_entry(self):
+        """A module may fill every slot Celerp reads except the ones its own modules fill;
+        it is refused for an unknown slot name."""
+        cases = [_slot_case(slot, _base(slot)) for slot in sorted(lint.PUBLIC_SLOTS)]
+        cases.append(_slot_case("nav_items", _base("nav")))
+        cases.append(_slot_case("nav", {"href": "//off.example"}))
+        self.assertParity(cases)
+
+    def test_slots_value(self):
+        self.assertParity(Case(value) for value in SHAPES + ({"nav": [_base("nav")]},))
+
+    def test_entry_shape(self):
+        cases = []
+        for slot in sorted(lint.PUBLIC_SLOTS - {"search_provider"}):
+            base = _base(slot)
+            for contribution in SHAPES + ([base], base, [base, base], [base, 1], [base, None]):
+                cases.append(Case({slot: contribution}, {"{pkg}/hooks.py": HOOKS}))
+        self.assertParity(cases)
+
+    def test_slot_permission(self):
+        self._permission_sweep("permission")
+
+    def test_slot_write_permission(self):
+        self._permission_sweep("write_permission")
+
+    def _permission_sweep(self, key: str):
+        values = ("view_inventory", "manage_labels", "", None, 0, False, True, [], {}, 1.5,
+                  ["view_inventory"], "not_a_permission", " view_inventory", "VIEW_INVENTORY")
+        self.assertParity(_slot_case(slot, {**_base(slot), key: value})
+                          for slot in sorted(lint.PUBLIC_SLOTS) for value in values)
+
+    def test_requires_connector(self):
+        values = (None, "", False, 0, [], {}, "shopify", " ", 1, True, 1.5, ["shopify"], {"a": 1})
+        self.assertParity(_slot_case(slot, {**_base(slot), "requires_connector": value})
+                          for slot in sorted(lint.PUBLIC_SLOTS - {"search_provider"})
+                          for value in values)
+
+    def test_app_local_destinations(self):
+        cases = []
+        for slot, keys in lint.DESTINATION_KEYS.items():
+            for key in keys:
+                cases += [_slot_case(slot, {**_base(slot), key: path}) for path in PATHS]
+                cases.append(_slot_case(slot, {k: v for k, v in _base(slot).items() if k != key}))
+        self.assertParity(cases)
+
+    def test_link_templates(self):
+        """item_action and pricing_action href_template, and pricing_action's own keys."""
+        hrefs = PATHS + (
+            "/q/{entity_id}", "/q?l={price_list}&f={field_name}&e={entity_id}", "/a/{x}", "/a/{",
+            "/a/}", "/a/{{entity_id}}", "/a/{}", "/a/{ entity_id }", "/a/{entity_id",
+            "/a/entity_id}", "/a/{entity_id}{field_name}", "/q/{entity_id}/{entity_id}",
+        )
+        show_on = ([], ["sell"], ["sell", "cost"], ["editable", "readonly"], ["manual", "derived"],
+                   ["editable", "sell", "manual"], ["sell", "sell"], ["bogus"], ["Sell"], "sell",
+                   [1], [None], [[]], [{}]) + SHAPES
+        cases = []
+        for slot in ("item_action", "pricing_action"):
+            base = _base(slot)
+            cases += [_slot_case(slot, {**base, "href_template": h}) for h in hrefs]
+            cases.append(_slot_case(slot, {"label": "L"}))
+            cases += [_slot_case(slot, {**base, key: "x"})
+                      for key in ("extra", "icon", "show_on", "presentation", "label_key",
+                                  "requires_connector")]
+            cases += [_slot_case(slot, {**base, 1: "x"})]
+        base = _base("pricing_action")
+        cases += [_slot_case("pricing_action", {**base, "show_on": s}) for s in show_on]
+        cases += [_slot_case("pricing_action", {**base, "presentation": p})
+                  for p in ("page", "modal", "Page", "") + SHAPES]
+        self.assertParity(cases)
+
+    def test_projection_handler_prefix(self):
+        base = _base("projection_handler")
+        values = (ABSENT, "acme.", "a", "", None, 0, 1, True, ["acme."], {"acme.": 1})
+        self.assertParity(
+            _slot_case("projection_handler",
+                       {k: v for k, v in base.items() if k != "prefix"} if value is ABSENT
+                       else {**base, "prefix": value})
+            for value in values)
+
+    def test_projection_handler_prefixes_overlap(self):
+        """Within the module, and against the prefixes Celerp projects itself."""
+        base = _base("projection_handler")
+        prefix_sets = (("acme.",), ("acme.", "acme."), ("acme.", "acme.order."),
+                       ("acme.order.", "acme."), ("acme.order.", "acme.item."), ("sys.",),
+                       ("s",), ("mp.order.",), ("shop.",), ("shop.syncs.",), ("acme.", "mp."))
+        self.assertParity(
+            Case({"projection_handler": [{**base, "prefix": p} for p in prefixes]},
+                 {"{pkg}/__init__.py": "", "{pkg}/hooks.py": HOOKS})
+            for prefixes in prefix_sets)
+
+    def test_search_provider_descriptor(self):
+        good = _base("search_provider")
+        variants = [good, {**good, "extra": 1}, {**good, 1: "x"}, [good]] + list(SHAPES)
+        variants += [{k: v for k, v in good.items() if k != key} for key in good]
+        variants += [{**good, "result_key": value} for value in ("entries", "widgets", "") + SHAPES]
+        variants += [{**good, "requires_connector": "shopify"}]
+        self.assertParity(Case({"search_provider": v}, {"{pkg}/hooks.py": HOOKS}) for v in variants)
+
+    def test_entry_key_types(self):
+        """Each key the code reading a slot takes from an entry, in the type it reads."""
+        cases = []
+        for slot in sorted(lint.PUBLIC_SLOTS):
+            base = _base(slot)
+            for key in lint.SLOT_ENTRY_KEYS[slot]:
+                cases.append(_slot_case(slot, {k: v for k, v in base.items() if k != key}))
+                cases += [_slot_case(slot, {**base, key: value})
+                          for value in SHAPES + ("acme", 3, 2.5, [{"key": "k"}])]
+        self.assertParity(cases)
+
+    def test_bulk_action_type(self):
+        base = _base("bulk_action")
+        self.assertParity(_slot_case("bulk_action", {**base, "action_type": value})
+                          for value in ("htmx", "navigate", "navgate", "HTMX") + SHAPES)
+
+    def test_category_fields(self):
+        base = _base("category_schema")
+        fields = [{"key": "k"}, {"key": ""}, {"label": "L"}, "k", None, {"key": 1}, {1: "k"}]
+        fields += [{"key": "k", key: value} for key in lint.CATEGORY_FIELD_KEYS
+                   for value in ("x", ["a"]) + SHAPES]
+        self.assertParity(_slot_case("category_schema", {**base, "fields": [field]})
+                          for field in fields)
+
+    def test_import_names(self):
+        """The package names a module answers to: its own folder's, and each package
+        or importable file (source, compiled or extension) directly in the folder."""
+        cases = [Case({"nav": [_base("nav")]}, name=name)
+                 for name in ("acme_names", "json", "ui", "celerp", "default_modules",
+                              "celerp_x", "tabnanny")]
+        for rel in ("json.py", "ui/__init__.py", "celerp_x.py", "premium_modules/__init__.py",
+                    "acme_names_helper.py", "json/data.txt", "celerp_x.pyc",
+                    "json.abi3.so", "ui/__init__.pyc", "acme_names_helper.pyc"):
+            cases.append(Case({"nav": [_base("nav")]}, {rel: ""}))
+        self.assertParity(cases)
+
+    def test_tables_inside_the_prefix(self):
+        """Every table the module's code defines starts with its table_prefix."""
+        routes = ("import sqlalchemy as sa\nfrom celerp.models.base import Base\n\n"
+                  "sa.Table({table!r}, Base.metadata, sa.Column('id', sa.Integer, primary_key=True))\n\n\n"
+                  "def setup_api_routes(app):\n    pass\n")
+        cases = []
+        for prefix, table in ((ABSENT, None), ("{pkg}_", None), ("{pkg}_", "{pkg}_items"),
+                              ("{pkg}_", "other{pkg}_items"), (ABSENT, "{pkg}_items"),
+                              ("{pkg}_x_", "{pkg}_items")):
+            files = {"{pkg}/__init__.py": "",
+                     "{pkg}/api.py": routes.format(table=table) if table
+                     else "def setup_api_routes(app):\n    pass\n"}
+            fields = {"api_routes": "{pkg}.api"}
+            if prefix is not ABSENT:
+                fields["table_prefix"] = prefix
+            if table:
+                fields["company_backup"] = {table: "include"}
+            cases.append(Case(files=files, **fields))
+        try:
+            self.assertParity(cases)
+        finally:
+            from celerp.models.base import Base
+            for key in [k for k in Base.metadata.tables if k.endswith("_items") and "acme_p" in k]:
+                Base.metadata.remove(Base.metadata.tables[key])
+
+    def test_callable_ownership_and_provenance(self):
+        """Who owns the code a callable slot names: shape, in-module source, protected
+        imports (also through a local import), core and stdlib decoys, re-exports."""
+        files = {
+            "{pkg}/hooks.py": HOOKS,
+            "{pkg}/reexport.py": "from .hooks import sync_fn, async_fn\n",
+            "{pkg}/reexport_abs.py": "from {pkg}.hooks import sync_fn, async_fn\n",
+            "{pkg}/foreign.py": ("from celerp.services.app_paths import is_app_local_path as sync_fn\n"
+                                 "from celerp.modules.slots import fire_lifecycle as async_fn\n"),
+            "{pkg}/stdlib.py": "from os.path import join as sync_fn\nfrom asyncio import sleep as async_fn\n",
+            "{pkg}/broken.py": "def sync_fn(:\n",
+        }
+        # Decoys at the folder root, where Celerp's import path puts them first: a
+        # name Python or Celerp has already imported still resolves to the original.
+        decoy = {"celerp/services/app_paths.py": "def is_app_local_path(*a):\n    return True\n",
+                 "celerp/__init__.py": "", "celerp/services/__init__.py": "",
+                 "json.py": "def dumps(*a):\n    return ''\n\n\nasync def loads(*a):\n    return ''\n"}
+        protected = {"{pkg}/bad.py": "import celerp.ai.service\n" + HOOKS}
+        transitive = {"{pkg}/via.py": "from . import helper\n" + HOOKS,
+                      "{pkg}/helper.py": "from celerp.gateway import client\n"}
+        cases = []
+        for slot in sorted(lint.CALLABLE_SLOTS):
+            key, awaited = lint.CALLABLE_SLOTS[slot]
+            fn = "async_fn" if awaited else "sync_fn"
+            base = _base(slot)
+
+            def case(dotted, extra=None):
+                return _slot_case(slot, {**base, key: dotted}, {**files, **(extra or {})})
+
+            cases += [case(d) for d in (
+                f"{{pkg}}.hooks:{fn}", f"{{pkg}}.reexport:{fn}", f"{{pkg}}.reexport_abs:{fn}",
+                f"{{pkg}}.foreign:{fn}", f"{{pkg}}.stdlib:{fn}", f"{{pkg}}.broken:{fn}",
+                f"{{pkg}}.hooks:missing", f"{{pkg}}.nope:{fn}", f"{{pkg}}.hooks:VALUE",
+                f"{{pkg}}.hooks.{fn}", f"{{pkg}}.hooks:{fn}:x", f":{fn}", "{pkg}.hooks:",
+                "", None, 5, [f"{{pkg}}.hooks:{fn}"], "celerp.services.app_paths:is_app_local_path",
+                "celerp.modules.slots:fire_lifecycle",
+            )]
+            cases.append(case("celerp.services.app_paths:is_app_local_path", decoy))
+            cases.append(case("json:" + ("loads" if awaited else "dumps"), decoy))
+            cases.append(case(f"{{pkg}}.bad:{fn}", protected))
+            cases.append(case(f"{{pkg}}.sub:{fn}",
+                              {"{pkg}/sub.py": "from celerp.ai import quota\n" + HOOKS}))
+            cases.append(case(f"{{pkg}}.llm:{fn}",
+                              {"{pkg}/llm.py": "from celerp.ai import llm\n" + HOOKS}))
+            cases.append(case(f"{{pkg}}.dyn:{fn}",
+                              {"{pkg}/dyn.py": "import importlib\nimportlib.import_module('celerp.gateway')\n" + HOOKS}))
+            cases.append(_slot_case(slot, {**base, key: f"{{pkg}}.linked:{fn}"}, files,
+                                    links={"{pkg}/linked.py": HOOKS}))
+            cases.append(case(f"{{pkg}}.via:{fn}", transitive))
+            cases.append(case(f"{{pkg}}:{fn}", {"{pkg}/__init__.py": f"from .hooks import {fn}\n"}))
+        self.assertParity(cases)
+
+    def test_handler_keywords(self):
+        """item_lineage_guard: Celerp awaits the handler with exactly its keyword
+        arguments, so a handler taking any other set, any positional-only one, or
+        *args or **kwargs is refused; so is a sync one."""
+        cases = []
+        for slot, keywords in sorted(lint.HANDLER_KEYWORDS.items()):
+            if slot not in lint.PUBLIC_SLOTS:
+                continue
+            kw = ", ".join(keywords)
+            fills = {"kw": kw, "rev": ", ".join(reversed(keywords)),
+                     "short": ", ".join(keywords[:-1])}
+            for n, params in enumerate(SIGNATURES):
+                for prefix in ("async ", ""):
+                    text = f"{prefix}def handler(" + params.format(**fills) + "):\n    return None\n"
+                    cases.append(_slot_case(slot, {"handler": "{pkg}.sig:handler"},
+                                            {"{pkg}/sig.py": text}))
+            cases.append(_slot_case(slot, {"handler": "{pkg}.sig:handler"},
+                                    {"{pkg}/sig.py": f"handler = lambda *, {kw}: None\n"}))
+            cases.append(_slot_case(slot, {"handler": "{pkg}.reexport:handler"}, {
+                "{pkg}/sig.py": f"async def handler(*, {kw}):\n    return None\n",
+                "{pkg}/reexport.py": "from .sig import handler\n"}))
+            cases.append(_slot_case(slot, {"handler": "{pkg}.sig:alias"}, {
+                "{pkg}/sig.py": f"async def handler({kw}, more):\n    return None\n\n\nalias = handler\n"}))
+        self.assertParity(cases)
+
+    def test_chart_of_accounts_is_not_a_slot(self):
+        """The chart of accounts is the bundled accounting module's alone, not a slot:
+        Celerp refuses a module filling these names, and lint.py says so."""
+        names = ("journal_accounts", "chart_accounts", "add_chart_account")
+        self.assertFalse(set(names) & slots.SLOT_NAMES)
+        self.assertFalse(set(names) & lint.SLOT_NAMES)
+        refused = [_slot_case(name, {"handler": "{pkg}.hooks:async_fn"}) for name in names]
+        self.assertParity(refused + [_slot_case("nav", _base("nav"))])
+        for case in refused:
+            folder, _ = self._write(case, flat=False)
+            self.assertTrue(any("unknown slot" in p for p in lint.check(folder)[0]))
+
+    def test_module_name(self):
+        """The name Celerp admits a module under: its characters and its length."""
+        names = ("acme-x", "acme_x", "Acme9", "9acme", "a" * 64, "a" * 65, "-acme", "_acme",
+                 "acme.x", "acme x", "acmé")
+        self.assertParity(Case({"nav": [_base("nav")]}, name=name) for name in names)
+
+    def test_reserved_name_prefix(self):
+        """celerp- names, in any letter case and spelled celerp_, are reserved for
+        Marketplace modules: the upload refuses them, and lint.py flags them."""
+        for name, reserved in (("celerp-x", True), ("Celerp-x", True), ("CELERP-x", True),
+                               ("celerp_x", True), ("acme-x", False), ("acme-celerp-x", False)):
+            folder, _ = self._write(Case({"nav": [_base("nav")]}, name=name), flat=False)
+            flagged = any(_RESERVED_NAMES in p for p in lint.check(folder)[0])
+            try:
+                importer._validate_name(name)
+                refused = False
+            except importer.ModuleImportError as exc:
+                refused = _RESERVED_NAMES in str(exc)
+            self.assertEqual((flagged, refused), (reserved, reserved), name)
+
+    def test_route_entrypoints(self):
+        """api_routes and ui_routes: a file inside the module that defines setup or
+        imports it from the module's own code (checked before any code runs), and a
+        setup that is the module's own plain function (checked before it is called)."""
+        files = {
+            "{pkg}/__init__.py": "",
+            "{pkg}/api.py": "def setup_api_routes(app):\n    pass\n",
+            "{pkg}/ui.py": "def setup_ui_routes(app):\n    pass\n",
+            "{pkg}/both.py": "from .impl import setup_api_routes, setup_ui_routes\n",
+            "{pkg}/impl.py": ("def setup_api_routes(app):\n    pass\n\n\n"
+                              "def setup_ui_routes(app):\n    pass\n"),
+            "{pkg}/absolute.py": "from {pkg}.impl import setup_api_routes, setup_ui_routes\n",
+            "{pkg}/is_async.py": ("async def setup_api_routes(app):\n    pass\n\n\n"
+                                  "async def setup_ui_routes(app):\n    pass\n"),
+            "{pkg}/none.py": "def other(app):\n    pass\n",
+            "{pkg}/foreign.py": ("from os.path import join as setup_api_routes\n"
+                                 "from os.path import join as setup_ui_routes\n"),
+            "{pkg}/klass.py": "class setup_api_routes:\n    pass\n\n\nclass setup_ui_routes:\n    pass\n",
+            "{pkg}/broken.py": "def setup_api_routes(:\n",
+            "{pkg}/via.py": "from .impl_bad import setup_api_routes, setup_ui_routes\n",
+            "{pkg}/impl_bad.py": ("from os.path import join as setup_api_routes\n"
+                                  "from os.path import join as setup_ui_routes\n"),
+        }
+        links = {"{pkg}/linked.py": files["{pkg}/impl.py"]}
+        cases = []
+        for key in ("api_routes", "ui_routes"):
+            for module in ("{pkg}.api", "{pkg}.ui", "{pkg}.both", "{pkg}.absolute", "{pkg}.is_async",
+                           "{pkg}.none", "{pkg}.foreign", "{pkg}.klass", "{pkg}.broken",
+                           "{pkg}.via", "{pkg}.nope", "{pkg}.linked", "json",
+                           "ui.routes.reports", "celerp.main", "{pkg}..api"):
+                cases.append(Case(files=files, links=links if module == "{pkg}.linked" else {},
+                                  **{key: module}))
+            protected = {"{pkg}/protected.py": "import celerp.ai.service\n" + files["{pkg}/impl.py"]}
+            cases.append(Case(files={**files, **protected}, **{key: "{pkg}.protected"}))
+        self.assertParity(cases)
+        # Flat, ui.py would sit at the top of the module, where its name is Celerp's.
+        flat = {rel: text for rel, text in files.items() if rel != "{pkg}/ui.py"}
+        self.assertParity([Case(files=flat, api_routes="{pkg}.impl", ui_routes="{pkg}.impl"),
+                           Case(files=flat, api_routes="{pkg}.impl", ui_routes="{pkg}.is_async"),
+                           Case(files=files, api_routes="{pkg}.impl", ui_routes="{pkg}.impl")],
+                          flat=True)
+
+    def test_migrations_package(self):
+        """The migrations package admission resolves before any migration runs: a
+        dotted path of identifiers whose folder, and every file in it not starting
+        with _, stay inside the module."""
+        migration = "def upgrade():\n    pass\n"
+        files = {**ROUTES, "{pkg}/migrations/__init__.py": "", "{pkg}/migrations/m001.py": migration}
+        cases = [Case(files=files, ui_routes="{pkg}.ui_routes", table_prefix="acme_", migrations=m)
+                 for m in ("{pkg}.migrations", "{pkg}.absent", "../outside", "/tmp", "{pkg}/migrations",
+                           "{pkg}..migrations", "{pkg}.migrations.", "1x.migrations", "{pkg}.mig-rations",
+                           "{pkg}")]
+        for package, link in (("{pkg}.linked", {"{pkg}/linked": {"m001.py": migration}}),
+                              ("{pkg}.migrations", {"{pkg}/migrations/m002.py": migration}),
+                              ("{pkg}.migrations", {"{pkg}/migrations/_helper.py": migration})):
+            cases.append(Case(files=files, links=link, ui_routes="{pkg}.ui_routes",
+                              table_prefix="acme_", migrations=package))
+        self.assertParity(cases)
+
+    def test_manifest_declaration(self):
+        """PLUGIN_MANIFEST is bound once, as one top-level literal, and never changed,
+        read or replaced by a later star import anywhere in __init__.py."""
+        inits = ("{manifest}", "from os.path import *\n{manifest}",
+                 "{manifest}import os\nVERSION = '0.1.0'\n",
+                 "{manifest}def f():\n    manifest = {}\n    return manifest\n",
+                 "{manifest}{manifest}", "OTHER = {manifest}",
+                 "{manifest}PLUGIN_MANIFEST['version'] = '0.2.0'\n",
+                 "{manifest}PLUGIN_MANIFEST |= {}\n",
+                 "{manifest}def f():\n    global PLUGIN_MANIFEST\n    PLUGIN_MANIFEST = {}\n",
+                 "{manifest}NAME = PLUGIN_MANIFEST['name']\n", "{manifest}del PLUGIN_MANIFEST\n",
+                 "if True:\n    {manifest}", "{manifest}from os.path import *\n",
+                 "{manifest}globals()['PLUGIN_MANIFEST'] = {}\n")
+        self.assertParity(Case({"nav": [_base("nav")]}, init=init) for init in inits)
+
+    def test_dynamic_writes(self):
+        """The code Celerp runs for a module (its __init__.py, route and callable
+        modules, migrations, and the module's own files they import) must not write
+        names its source does not show; a file nothing imports is never run."""
+        writes = ("globals()['{fn}'] = {fn}\n", "vars()['{fn}'] = {fn}\n",
+                  "import sys\nsetattr(sys.modules[__name__], '{fn}', {fn})\n",
+                  "exec('def {fn}(*a, **k):\\n    return None')\n", "eval('1')\n",
+                  "{fn}.__code__ = (lambda *a, **k: None).__code__\n",
+                  "import sys\nsys.modules[__name__].__dict__['{fn}'] = {fn}\n",
+                  "import sys\nname = '{fn}'[:]\nsetattr(sys.modules[__name__], name, {fn})\n",
+                  "from {pkg} import PLUGIN_MANIFEST\n",
+                  "x = getattr(Klass, 'mro')\n", "setattr(Klass, 'flag', 1)\n",
+                  "def f():\n    return locals()\n", "")
+        cases = []
+        for slot in sorted(lint.CALLABLE_SLOTS):
+            key, awaited = lint.CALLABLE_SLOTS[slot]
+            fn = "async_fn" if awaited else "sync_fn"
+            entry = {**_base(slot), key: f"{{pkg}}.hooks:{fn}"}
+            cases += [_slot_case(slot, entry, {"{pkg}/hooks.py": HOOKS + w.replace("{fn}", fn)})
+                      for w in writes]
+            for files in ({"{pkg}/hooks.py": "from . import helper\n" + HOOKS,
+                           "{pkg}/helper.py": "globals()['x'] = 1\n"},
+                          {"{pkg}/__init__.py": "globals()['x'] = 1\n"},
+                          {"{pkg}/scratch.py": "globals()['x'] = 1\n"}):
+                cases.append(_slot_case(slot, entry, files))
+        routes = "def setup_ui_routes(app):\n    pass\n\n\n"
+        for extra in ("globals()['setup_ui_routes'] = setup_ui_routes\n",
+                      "setup_ui_routes.__defaults__ = ()\n", ""):
+            cases.append(Case(files={**ROUTES, "{pkg}/ui_routes.py": routes + extra},
+                              ui_routes="{pkg}.ui_routes"))
+        migration = "def upgrade():\n    pass\n"
+        for extra in ("exec('x = 1')\n", ""):
+            cases.append(Case(files={**ROUTES, "{pkg}/migrations/__init__.py": "",
+                                     "{pkg}/migrations/m001.py": migration + extra},
+                              ui_routes="{pkg}.ui_routes", table_prefix="acme_",
+                              migrations="{pkg}.migrations"))
+        cases += [Case({"nav": [_base("nav")]}, init="{manifest}" + extra)
+                  for extra in ("vars()['x'] = 1\n", "x = 1\n")]
+        self.assertParity(cases)
+
+    def test_module_tree(self):
+        """Celerp reads every file in the module, links never followed: a link to a
+        file or folder anywhere in it, or a file it cannot read, refuses the module,
+        except under the names it never reads."""
+        nav = {"nav": [_base("nav")]}
+        cases = [Case(nav, {"{pkg}/notes.txt": "x"}),
+                 Case(nav, links={"{pkg}/notes.py": "x = 1\n"}),
+                 Case(nav, links={"notes.py": "x = 1\n"}),
+                 Case(nav, links={"{pkg}/assets": {"a.txt": "x"}}),
+                 Case(nav, links={"docs": {"a.txt": "x"}}),
+                 Case(nav, links={"{pkg}/__pycache__": {"a.pyc": "x"}}),
+                 Case(nav, links={"{pkg}/old.pyc": "x"}),
+                 Case(nav, links={".github": {"a.yml": "x"}})]
+        if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+            cases += [Case(nav, {"{pkg}/notes.txt": "x"}, unreadable=["{pkg}/notes.txt"]),
+                      Case(nav, {"{pkg}/__pycache__/x.pyc": "x"},
+                           unreadable=["{pkg}/__pycache__/x.pyc"])]
+        self.assertParity(cases)
+
+    def test_imported_files_parse(self):
+        """Every file of the module's own that the code Celerp runs imports, directly
+        or not, must parse, even one imported only inside a function that has not
+        run yet; a file nothing imports is never run."""
+        cases = []
+        for slot in sorted(lint.CALLABLE_SLOTS):
+            key, awaited = lint.CALLABLE_SLOTS[slot]
+            entry = {**_base(slot), key: f"{{pkg}}.hooks:{'async_fn' if awaited else 'sync_fn'}"}
+            for files in ({"{pkg}/hooks.py": "from . import helper\n" + HOOKS,
+                           "{pkg}/helper.py": "def x(:\n"},
+                          {"{pkg}/hooks.py": "from . import helper\n" + HOOKS,
+                           "{pkg}/helper.py": "from .more import y\n", "{pkg}/more.py": "y = (\n"},
+                          {"{pkg}/hooks.py": "from .sub.deep import x\n" + HOOKS,
+                           "{pkg}/sub/__init__.py": "def x(:\n", "{pkg}/sub/deep.py": "x = 1\n"},
+                          {"{pkg}/hooks.py": "import {pkg}.helper\n" + HOOKS,
+                           "{pkg}/helper.py": "def x(:\n"},
+                          {"{pkg}/hooks.py": "from . import helper\n" + HOOKS,
+                           "{pkg}/helper.py": "x = 1\n", "{pkg}/scratch.py": "def x(:\n"},
+                          {"{pkg}/hooks.py": "from .sub.deep import x\n" + HOOKS,
+                           "{pkg}/sub/__init__.py": "", "{pkg}/sub/deep.py": "x = 1\n"},
+                          {"{pkg}/hooks.py": LATER + HOOKS, "{pkg}/helper.py": "def x(:\n"},
+                          {"{pkg}/hooks.py": LATER + HOOKS, "{pkg}/helper.py": "x = 1\n"}):
+                cases.append(_slot_case(slot, entry, files))
+        routes = "from . import helper\n\n\ndef setup_ui_routes(app):\n    pass\n"
+        for helper in ("x = (\n", "x = 1\n"):
+            cases.append(Case(files={**ROUTES, "{pkg}/ui_routes.py": routes, "{pkg}/helper.py": helper},
+                              ui_routes="{pkg}.ui_routes"))
+        self.assertParity(cases)
+
+    def test_where_lint_is_stricter(self):
+        """What lint.py refuses although Celerp may load it. Callables only running the
+        code could follow (a decorated function, a name a star import brings in, a
+        value built by a call), a protected import in a file nothing imports, and a
+        folder no one may read. lint.py refuses every one; Celerp loads some."""
+        wrap = ("import functools\n\n\ndef wrap(f):\n    @functools.wraps(f)\n"
+                "    def inner(*a, **k):\n        return f(*a, **k)\n    return inner\n\n\n")
+        cases = []
+        for slot in sorted(lint.CALLABLE_SLOTS):
+            key, awaited = lint.CALLABLE_SLOTS[slot]
+            fn = "async_fn" if awaited else "sync_fn"
+            for module, text in (
+                    ("deco", wrap + f"@wrap\n{'async ' if awaited else ''}def {fn}(*a, **k):\n    return None\n"),
+                    ("star", "from .hooks import *\n"),
+                    ("built", f"import functools\nfrom .hooks import {fn} as _f\n{fn} = functools.partial(_f)\n")):
+                cases.append(_slot_case(slot, {**_base(slot), key: f"{{pkg}}.{module}:{fn}"},
+                                        {f"{{pkg}}/{module}.py": text}))
+            cases.append(_slot_case(slot, _base(slot),
+                                    {"{pkg}/unused.py": "import celerp.gateway\n"}))
+        # A folder no one may read: Celerp reads past it, lint.py cannot check it.
+        if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+            cases.append(Case({"nav": [_base("nav")]}, {"{pkg}/private/a.txt": "x"},
+                              unreadable=["{pkg}/private"]))
+        loaded = 0
+        for case in cases:
+            folder, pkg = self._write(case, flat=False)
+            self.assertTrue(lint.check(folder)[0], case)
+            loaded += not self._core_refuses(folder, pkg)
+        self.assertGreater(loaded, 0)
+
+    def test_callable_flat_layout(self):
+        """A module whose folder is itself the package names its callables from it."""
+        cases = []
+        for slot in sorted(lint.CALLABLE_SLOTS):
+            key, awaited = lint.CALLABLE_SLOTS[slot]
+            for fn in ("sync_fn", "async_fn"):
+                cases.append(_slot_case(slot, {**_base(slot), key: f"{{pkg}}.hooks:{fn}"}))
+        self.assertParity(cases, flat=True)
+
+    def test_callable_sync_or_async(self):
+        """Async exactly where Celerp awaits the call."""
+        self.assertParity(
+            _slot_case(slot, {**_base(slot), lint.CALLABLE_SLOTS[slot][0]: f"{{pkg}}.hooks:{name}"})
+            for slot in sorted(lint.CALLABLE_SLOTS)
+            for name in ("sync_fn", "async_fn", "Klass", "lam"))
+
+    def test_table_prefix(self):
+        """table_prefix at install: shape, migrations, and every table Celerp reserves,
+        including the tables of first-party modules that are not turned on."""
+        prefixes = (
+            "acme_", "acme_x_", "abc_", "acme__", "ACME_", "zq9_", "___", "acmé_",
+            "", "_", "__", "a_", "ab", "abc", "acme", "acme-", "acme_ ", " acme",
+            None, 1, 1.5, True, ["acme_"], {"acme_": 1}, ("acme_",),
+            "label_", "marketplace_", "bank_", "alembic_", "instance_", "user_", "ai_", "sync_",
+            "labels_", "bank_x_", "accounts_",
+        )
+        disagree, refused, total = [], 0, 0
+        modules = pathlib.Path(self.tmp.name) / "modules"
+        modules.mkdir()
+        for prefix, migrations in itertools.product((ABSENT,) + prefixes,
+                                                   (ABSENT, "thing.migrations", "", None)):
+            manifest = {}
+            if prefix is not ABSENT:
+                manifest["table_prefix"] = prefix
+            if migrations is not ABSENT:
+                manifest["migrations"] = migrations
+            folder, _ = self._write(Case(files=ROUTES, ui_routes="{pkg}.ui_routes", **manifest),
+                                    flat=False)
+            lint_refuses = bool(lint.check(folder)[0])
+            with mock.patch.dict(os.environ, {"MODULE_DIR": str(modules)}):
+                try:
+                    importer._validate_table_prefix(folder.name, manifest)
+                    core = False
+                except importer.ModuleImportError:
+                    core = True
+            total += 1
+            refused += core
+            if lint_refuses != core:
+                disagree.append((manifest, lint_refuses, core))
+        self.assertEqual(disagree, [], "(manifest, lint refuses, celerp refuses)")
+        self.assertTrue(0 < refused < total)
+
+    def test_public_module_helpers(self):
+        """The three helpers the guide documents and the example calls, as Celerp
+        defines them, and every call the example makes binds to Celerp's signature."""
+        empty, positional, keyword = (inspect.Parameter.empty, inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                      inspect.Parameter.KEYWORD_ONLY)
+        expected = {
+            "api_request": (True, [("request", positional, empty), ("method", positional, empty),
+                                   ("path", positional, empty), ("json", keyword, None),
+                                   ("params", keyword, None)]),
+            "read_resource": (False, [("module_file", positional, empty),
+                                      ("relative_path", positional, empty)]),
+            "ai_query": (True, [("query", positional, empty), ("company_id", positional, empty),
+                                ("session_token", positional, None), ("db_session", positional, None)]),
+        }
+        for name, (awaited, params) in expected.items():
+            fn = getattr(module_api, name)
+            self.assertEqual(inspect.iscoroutinefunction(fn), awaited, name)
+            self.assertEqual([(p.name, p.kind, p.default)
+                              for p in inspect.signature(fn).parameters.values()], params, name)
+        calls = 0
+        module = lint.find_module(ROOT)
+        for py_file in (f for f in module.rglob("*.py")
+                        if f.relative_to(module).parts[0] != "tests"):
+            for node in ast.walk(ast.parse(py_file.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Call) and getattr(node.func, "id", None) in expected:
+                    calls += 1
+                    with self.subTest(file=py_file.name, line=node.lineno):
+                        inspect.signature(getattr(module_api, node.func.id)).bind(
+                            *node.args, **{k.arg: k.value for k in node.keywords})
+        self.assertGreater(calls, 0, "the example calls none of the helpers")
+
+    def test_source_rules_match(self):
+        """lint.py's copies of the rules Celerp reads module source by give Celerp's
+        answer on the same parsed source."""
+        texts = [
+            "PLUGIN_MANIFEST = {}\n", "PLUGIN_MANIFEST = {}\nPLUGIN_MANIFEST = {}\n",
+            "A = PLUGIN_MANIFEST = {}\n", "PLUGIN_MANIFEST: dict = {}\n",
+            "PLUGIN_MANIFEST = {}\nfrom x import *\n", "from x import *\nPLUGIN_MANIFEST = {}\n",
+            "PLUGIN_MANIFEST = {}\nprint(PLUGIN_MANIFEST)\n", "if x:\n    PLUGIN_MANIFEST = {}\n",
+            "def handler():\n    pass\n", "def handler():\n    pass\nhandler = 1\n",
+            "async def handler():\n    pass\nfrom x import *\n", "handler = lambda: None\n",
+            "from .a import handler\n", "import a.handler\n", "x = [handler := 1]\n",
+            "try:\n    pass\nexcept E as handler:\n    pass\n",
+            "match x:\n    case {**handler}:\n        pass\n",
+            "def f():\n    global handler\n    handler = 1\n",
+            "globals()['handler'] = 1\n", "vars()\n", "exec('x')\n", "eval('x')\n",
+            "__builtins__\n", "def f():\n    return locals()\n", "locals()\n",
+            "def f(a=locals()):\n    pass\n", "class K:\n    x = locals()\n",
+            "def f():\n    g = locals\n", "import sys\nsetattr(sys.modules[__name__], 'handler', 1)\n",
+            "setattr(obj, 'handler', 1)\n", "setattr(obj, 'flag', 1)\n", "setattr(obj, name, 1)\n",
+            "import os\nsetattr(os, name, 1)\n", "m = __import__('x')\nsetattr(m, name, 1)\n",
+            "getattr(obj, 'mro')\n", "getattr(obj, '__globals__')\n", "g = getattr\n",
+            "setattr(*args)\n", "setattr(obj, name=1)\n", "from operator import attrgetter\n",
+            "import operator\noperator.attrgetter('a.handler')\n",
+            "import operator\noperator.attrgetter(name)\n", "import operator\nf = operator.methodcaller\n",
+            "from operator import attrgetter as ag\n", "from builtins import setattr\n",
+            "from x import PLUGIN_MANIFEST\n", "import x\nx.PLUGIN_MANIFEST\n",
+            "handler.__code__ = None\n", "del handler.__defaults__\n", "obj.handler = 1\n",
+            "obj.other = 1\n", "import sys\nsys.modules['x'] = 1\n",
+            "import sys\nsys.modules.update({})\n", "f.__dict__\n", "import gc\ngc.get_referrers(x)\n",
+            "x = obj.__setattr__\n", "import sys\nsys._getframe().f_globals\n", "x = 1\n", "",
+        ]
+        for text in texts:
+            tree = ast.parse(text)
+            with self.subTest(text=text):
+                try:
+                    expected = importer._manifest_node(tree)
+                except importer.ModuleImportError:
+                    expected = "ambiguous"
+                node, error = lint._manifest_node(tree)
+                self.assertEqual("ambiguous" if error else node, expected)
+                for name in ("handler", "PLUGIN_MANIFEST", "x"):
+                    self.assertIs(lint._top_level_binding(tree, name),
+                                  loader._top_level_binding(tree, name))
+                for handlers in ({"PLUGIN_MANIFEST"}, {"PLUGIN_MANIFEST", "handler"}):
+                    self.assertEqual(lint._dynamic_write(tree, handlers),
+                                     loader._dynamic_write(tree, handlers))
+                for node in ast.walk(tree):
+                    self.assertEqual(lint._bound_names(node), importer._bound_names(node))
+
+    def test_source_resolution_matches(self):
+        """Which of the module's own files an import names, and which files the code
+        Celerp runs reaches, as Celerp resolves them."""
+        root = pathlib.Path(self.tmp.name) / "resolve" / "acme-r"
+        files = {"__init__.py": "", "acme_r/__init__.py": "from . import a\n",
+                 "acme_r/a.py": "from .sub import b\nimport acme_r.c\nfrom .. import outside\n",
+                 "acme_r/sub/__init__.py": "", "acme_r/sub/b.py": "from ..d import *\n",
+                 "acme_r/c.py": "import json\nfrom acme_r import e\n", "acme_r/d.py": "",
+                 "acme_r/e.py": "", "acme_r/lonely.py": "import acme_r.a\n"}
+        for rel, text in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text, encoding="utf-8")
+        for rel in files:
+            current = root / rel
+            for node in ast.walk(ast.parse(current.read_text(encoding="utf-8"))):
+                self.assertEqual(lint._local_imports(root, current, node),
+                                 loader._local_imports(root, current, node))
+        for entries in ([root / "__init__.py"], [root / "acme_r/a.py"], [root / "acme_r/sub/b.py"]):
+            trees, problems = lint._reachable_sources(root, entries)
+            self.assertEqual(problems, [])
+            self.assertEqual(set(trees), set(loader._reachable_sources(root, entries)))
+
+    def test_shared_constants_match(self):
+        self.assertEqual(lint.TREE_EXCLUDE_GLOBS, loader._DIGEST_EXCLUDE_GLOBS)
+        self.assertEqual(lint.NAMESPACE_WRITERS, loader._NAMESPACE_WRITERS)
+        self.assertEqual(lint.MAPPING_WRITERS, loader._MAPPING_WRITERS)
+        self.assertEqual(lint.NAMESPACE_WRITER_ATTRS, loader._NAMESPACE_WRITER_ATTRS)
+        self.assertEqual(lint.ATTR_BY_NAME, loader._ATTR_BY_NAME)
+        self.assertEqual(lint.FUNCTION_INTERNALS, loader._FUNCTION_INTERNALS)
+        self.assertEqual(lint.PERMISSION_KEYS, set(permissions._PERMISSIONS_BY_KEY))
+        self.assertEqual(lint.PERMISSION_ENTRY_KEYS, loader._PERMISSION_ENTRY_KEYS)
+        self.assertEqual(lint.DESTINATION_KEYS, loader._DESTINATION_KEYS)
+        self.assertEqual(lint.CALLABLE_SLOTS, loader._CALLABLE_SLOTS)
+        self.assertEqual(lint.RESERVED_TABLES, importer.reserved_tables("acme-thing"))
+        self.assertEqual(lint.MIN_TABLE_PREFIX_LEN, importer.MIN_TABLE_PREFIX_LEN)
+        self.assertEqual(lint.NAME_MAX, importer._NAME_MAX)
+        self.assertEqual(lint.PRICING_ACTION_KEYS, set(loader._PRICING_ACTION_KEYS))
+        self.assertEqual(lint.PRICING_ACTION_PLACEHOLDERS, set(loader._PRICING_ACTION_PLACEHOLDERS))
+        self.assertEqual(lint.ITEM_ACTION_PLACEHOLDERS, set(loader._ITEM_ACTION_PLACEHOLDERS))
+        self.assertEqual(lint.PRICING_ROW_TRAIT_PAIRS, loader._PRICING_ROW_TRAIT_PAIRS)
+        self.assertEqual(lint.PLACEHOLDER_RE.pattern, loader._PLACEHOLDER_RE.pattern)
+        self.assertEqual(lint.PROTECTED, set(loader._PROTECTED_BSL_INTERNALS))
+        self.assertEqual(lint.SEARCH_PROVIDER_KEYS, set(loader._SEARCH_PROVIDER_KEYS))
+        self.assertEqual(lint.SEARCH_PROVIDER_RESULT_KEYS, set(loader._SEARCH_RESULT_KEYS))
+        self.assertEqual(lint.SLOT_NAMES, slots.SLOT_NAMES)
+        self.assertEqual(lint.FIRST_PARTY_SLOTS, slots.FIRST_PARTY_SLOTS)
+        self.assertEqual(lint.PUBLIC_SLOTS, slots.SLOT_NAMES - slots.FIRST_PARTY_SLOTS)
+        self.assertEqual(lint.KERNEL_PROJECTION_PREFIXES, slots.KERNEL_PROJECTION_PREFIXES)
+        for a, b in itertools.product(("", "a", "acme.", "acme.order.", "sys.", "sys"), repeat=2):
+            self.assertEqual(lint._prefixes_overlap(a, b), slots.projection_prefixes_overlap(a, b))
+        self.assertEqual(lint.SLOT_ENTRY_KEYS, loader._SLOT_ENTRY_KEYS)
+        self.assertEqual(lint.ENTRY_TYPE_NAMES, loader._TYPE_NAMES)
+        self.assertEqual(lint.BULK_ACTION_TYPES, loader._BULK_ACTION_TYPES)
+        self.assertEqual(lint.CATEGORY_FIELD_KEYS, loader._CATEGORY_FIELD_KEYS)
+        self.assertEqual(lint.RESERVED_IMPORT_NAMES, loader._RESERVED_IMPORT_NAMES)
+        self.assertEqual(lint.RESERVED_IMPORT_PREFIX, loader._RESERVED_IMPORT_PREFIX)
+        self.assertEqual(set(lint.SLOT_CHECKS), set(loader._SLOT_VALIDATORS))
+        self.assertEqual(lint.HANDLER_KEYWORDS, loader._HANDLER_KEYWORDS)
+        # Every slot a core rule names is a slot lint knows.
+        named = set(loader._CALLABLE_SLOTS) | set(loader._DESTINATION_KEYS) | set(loader._SLOT_VALIDATORS)
+        self.assertLessEqual(named, lint.SLOT_NAMES)
+
+
+if __name__ == "__main__":
+    unittest.main()

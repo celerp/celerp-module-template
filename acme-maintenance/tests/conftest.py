@@ -3,20 +3,25 @@
 
 A module has two halves that talk over HTTP: the API router mounted on Celerp's
 FastAPI app, and the UI routes mounted on its FastHTML app. This harness stands
-both up in-process against SQLite and wires the UI's outbound client straight
-into the API app, so a request to `/maintenance` exercises the real render path,
-the real proxy call, and the real database write with nothing mocked in between.
+both up in-process against SQLite and wires Celerp's api_request straight into
+the API app, so a request to `/maintenance` exercises the real render path, the
+real api_request call, and the real database write with nothing mocked in between.
 
-Copying this file into your own module is the intended use. The three things to
-change are the imports at the top, `MODULE_TABLE_PREFIX`, and the stub company
-payload if your pages read fields this one does not.
+Copying this file into your own module is the intended use. The four things to
+change are the imports at the top, the module name passed to `load_all`,
+`MODULE_TABLE_PREFIX`, and the stub company payload if your pages read fields this
+one does not. The `Env` helpers `upload`, `equipment` and `service_log` belong to
+the equipment code: replace or delete them along with it.
 """
 from __future__ import annotations
 
 import base64
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -35,6 +40,14 @@ from celerp.services.auth import (
     get_current_role,
     get_current_user,
 )
+
+# Celerp admits the module before its code runs, as it does at boot: the module
+# reads its own shipped files (read_resource) while it is imported.
+from celerp.modules import loader
+
+_MODULE_DIR = Path(__file__).resolve().parents[2]
+_LOADED = loader.load_all(str(_MODULE_DIR), {"acme-maintenance"})
+assert [m["name"] for m in _LOADED] == ["acme-maintenance"], loader.load_errors()
 
 # Importing the models module registers this module's tables on the shared Base.
 # The tables are then looked up by NAME (see `Env.table`) rather than by importing
@@ -88,7 +101,8 @@ class Env:
     """Everything a test needs to drive the module: client, db, and knobs."""
 
     def __init__(self, client: TestClient, api_client: TestClient, sync_engine,
-                 company_id, other_company_id, locations: list[dict], inject: dict) -> None:
+                 company_id, other_company_id, locations: list[dict], inject: dict,
+                 acting: dict) -> None:
         self.client = client
         self.api = api_client
         self.company_id = company_id
@@ -96,6 +110,23 @@ class Env:
         self.locations = locations
         self.inject = inject
         self._engine = sync_engine
+        self._acting = acting
+
+    def upload(self, equipment_id: str, filename: str, content: bytes, content_type: str):
+        """POST a file to the API the way the UI sends it: JSON, bytes base64-encoded."""
+        return self.api.post(f"/api/maintenance/equipment/{equipment_id}/files", json={
+            "filename": filename, "content_type": content_type,
+            "content": base64.b64encode(content).decode("ascii")})
+
+    @contextmanager
+    def as_company(self, company_id):
+        """Make every API call in the block as a user of another company."""
+        before = self._acting["company_id"]
+        self._acting["company_id"] = company_id
+        try:
+            yield
+        finally:
+            self._acting["company_id"] = before
 
     # -- database access, for asserting on rows the routes wrote --
 
@@ -233,6 +264,7 @@ def make_env(tmp_path, monkeypatch):
             {"id": str(uuid.uuid4()), "name": "Warehouse"},
         ]
         inject: dict = {}
+        acting = {"company_id": company_id}
 
         # Attachments land under a temp data_dir. LocalBackend._root reads
         # settings.data_dir on every call, so patching the setting is enough.
@@ -273,7 +305,7 @@ def make_env(tmp_path, monkeypatch):
 
         @api.get("/companies/me")
         async def _company_me():
-            return {"id": str(company_id), "name": "Acme Co", "slug": "acme",
+            return {"id": str(acting["company_id"]), "name": "Acme Co", "slug": "acme",
                     "currency": "THB", "settings": {}}
 
         @api.get("/companies/me/locations")
@@ -281,20 +313,24 @@ def make_env(tmp_path, monkeypatch):
             return {"items": locs, "total": len(locs)}
 
         api.dependency_overrides[get_session] = _session_override
-        api.dependency_overrides[get_current_company_id] = lambda: company_id
+        api.dependency_overrides[get_current_company_id] = lambda: acting["company_id"]
         api.dependency_overrides[get_current_role] = lambda: role
         api.dependency_overrides[get_current_user] = lambda: object()
 
         wrapped_api = _FailInjector(api, inject)
         transport = httpx.ASGITransport(app=wrapped_api)
 
-        def _api_override(request):
-            token = request.cookies.get(COOKIE_NAME)
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            return httpx.AsyncClient(transport=transport, base_url="http://api",
-                                     headers=headers, timeout=5)
+        # api_request is Celerp's own: it checks the path, signs the call in with the
+        # session cookie and builds its client. Only the client's transport is
+        # swapped, so the call lands in the API app above instead of on a socket.
+        import celerp.modules.api as module_api
 
-        monkeypatch.setattr(ui_routes, "_api", _api_override)
+        class _InProcessClient(httpx.AsyncClient):
+            def __init__(self, **kwargs):
+                super().__init__(transport=transport, **kwargs)
+
+        monkeypatch.setattr(module_api, "httpx",
+                            SimpleNamespace(AsyncClient=_InProcessClient, Response=httpx.Response))
 
         # base_shell fetches company settings over the network when it is not
         # given any. The module passes its own, so this only guards the chrome
@@ -314,7 +350,7 @@ def make_env(tmp_path, monkeypatch):
         client.cookies.set(COOKIE_NAME, _fake_token(company_id, role))
 
         return Env(client, TestClient(wrapped_api, base_url="http://api"), sync_engine,
-                   company_id, other_company_id, locs, inject)
+                   company_id, other_company_id, locs, inject, acting)
 
     return _make
 

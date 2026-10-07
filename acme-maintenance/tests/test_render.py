@@ -264,6 +264,22 @@ def test_status_card_colours_known(env):
     assert "status-card--gray" not in markup, "a card colour fell through to grey"
 
 
+def test_empty_list_says_so(env):
+    """a company with no equipment sees the empty message, not a blank table or an error."""
+    markup = env.get("/maintenance").text
+    assert "No equipment yet" in markup
+    assert "could not be loaded" not in markup
+
+
+def test_list_shows_only_this_companys_equipment(env):
+    """the page a second company opens lists its own rows and none of the first's."""
+    env.equipment("Lathe")
+    with env.as_company(env.other_company_id):
+        markup = env.get("/maintenance").text
+    assert "Lathe" not in markup
+    assert "No equipment yet" in markup
+
+
 def test_api_failure_renders_error_state(env):
     """A27: an unreachable API says so; it never claims the list is empty."""
     env.inject["/api/maintenance/equipment"] = "raise"
@@ -355,3 +371,27 @@ def test_all_emitted_classes_exist_in_core_css(env):
         and c not in composed
     )
     assert missing == [], f"classes with no core styling and no core caller: {missing}"
+
+
+WRITE_CONTROLS = ("Mark serviced", "/cell/name/edit", "/maintenance/create-blank")
+
+
+def test_viewer_sees_no_write_controls(make_env):
+    """A role without edit_inventory gets the read-only page: the API would refuse every write."""
+    env = make_env(role="viewer")
+    env.equipment("Lathe")
+    markup = env.get("/maintenance").text
+    assert "Lathe" in markup
+    for control in WRITE_CONTROLS:
+        assert control not in markup, control
+
+
+def test_unreadable_company_settings_hide_write_controls(env):
+    """A company can re-point edit_inventory in its settings. When they cannot be
+    read, the page cannot know this role may write, so it shows no write controls."""
+    env.equipment("Lathe")
+    env.inject["/companies/me"] = "raise"
+    markup = env.get("/maintenance").text
+    assert "Lathe" in markup
+    for control in WRITE_CONTROLS:
+        assert control not in markup, control

@@ -19,12 +19,15 @@ Two things every module should copy from this file:
 Everything here uses celerp's PUBLIC helpers: get_session, get_current_user,
 get_current_company_id, require_permission, the attachments service, and the
 Location model for the company's own location list. Do NOT import
-celerp.session_gate, celerp.ai.*, celerp.gateway, or celerp.connectors - the
-loader rejects modules that do.
+celerp.session_gate, celerp.ai or anything under it, celerp.gateway, or
+celerp.connectors - the loader rejects modules that do.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
+import mimetypes
 import re
 import uuid
 from datetime import date, datetime, timezone
@@ -32,7 +35,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,6 +74,15 @@ class EquipmentIn(BaseModel):
     name: str = Field(default="New equipment", min_length=1, max_length=200)
     location: str = Field(default="", max_length=200)
     interval_days: int = Field(default=90, ge=1, le=3650)
+
+
+class FileIn(BaseModel):
+    """An uploaded file. The UI sends it with api_request, which carries JSON, so
+    the bytes arrive base64-encoded."""
+
+    filename: str
+    content_type: str | None = None
+    content: str
 
 
 # ── serialization ─────────────────────────────────────────────────────────────
@@ -414,7 +426,7 @@ def _check_filename(filename: str) -> str:
 
 
 @router.post("/equipment/{equipment_id}/files")
-async def upload_file(equipment_id: str, file: UploadFile = File(...),
+async def upload_file(equipment_id: str, file: FileIn,
                       _: None = CAN_EDIT,
                       company_id: str = Depends(get_current_company_id),
                       session: AsyncSession = Depends(get_session)) -> dict:
@@ -422,13 +434,18 @@ async def upload_file(equipment_id: str, file: UploadFile = File(...),
     metadata in this module's own table. The row is written only after the bytes
     land, so a storage failure never leaves a file the user cannot download."""
     e = await _get(session, company_id, equipment_id)
-    _check_filename(file.filename or "")
-    if not await file.read():
+    filename = _check_filename(file.filename)
+    try:
+        content = base64.b64decode(file.content, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=422, detail="The file content is not base64") from None
+    if not content:
         raise HTTPException(status_code=422, detail="The file is empty")
-    await file.seek(0)
+    mime = (file.content_type or mimetypes.guess_type(filename)[0]
+            or "application/octet-stream")
     try:
         # The size limit and the MIME allowlist are core's, checked in one place.
-        meta = await attachments.store_upload(str(company_id), file)
+        meta = await attachments.store_file(str(company_id), content, filename, mime)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError:

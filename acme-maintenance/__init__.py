@@ -9,9 +9,9 @@ The loader reads PLUGIN_MANIFEST below to learn the module's identity, which
 extension slots it fills, and where its routes and migrations live. Everything
 the loader needs is in this one dict.
 
-NAMING: third-party modules must NOT use the `celerp-` prefix - that namespace
-is reserved for official modules so users can tell first-party from community
-at a glance. Prefix with your own name instead (here: `acme-`).
+NAMING: do not use the `celerp-` prefix - names starting with it are reserved
+for Marketplace modules, and the upload refuses them. Prefix with your own name
+instead (here: `acme-`).
 """
 
 PLUGIN_MANIFEST = {
@@ -25,9 +25,9 @@ PLUGIN_MANIFEST = {
     # The oldest Celerp this module is built and tested against. Celerp refuses
     # to install it on anything older, with a message telling the user to update.
     # Raise this whenever you start using a core component an earlier release
-    # did not have: these pages need the shared cell's caller-supplied save URL
-    # and date type, and the public files section, which arrive in 2.0.0.
-    "min_celerp_version": "2.0.0",
+    # did not have: these pages call Celerp's API through celerp.modules.api
+    # (api_request and read_resource), which arrives in 2.5.4.
+    "min_celerp_version": "2.5.4",
 
     # ── Routes ────────────────────────────────────────────────────────────────
     # Dotted paths to the inner package's route modules. The loader imports each
@@ -98,8 +98,8 @@ PLUGIN_MANIFEST = {
         "acme_equipment_file": "include",
     },
 
-    # ── depends_on / requires ─────────────────────────────────────────────────
+    # ── depends_on ────────────────────────────────────────────────────────────
     # This template needs nothing. If your module depends on another module,
-    # list its name in "depends_on". If it needs pip packages, add a
-    # requirements.txt beside this file and list them in "requires" (advisory).
+    # list its name in "depends_on". Celerp never installs Python packages for
+    # a module, so use only what Celerp itself ships.
 }

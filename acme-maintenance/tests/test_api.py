@@ -182,22 +182,44 @@ def test_viewer_cannot_touch_files(make_env):
     """A44: the file routes are gated exactly like the rest of the writes."""
     env = make_env(role="viewer")
     eq = env.equipment("Lathe")
-    up = env.api.post(f"{API}/{eq}/files",
-                      files={"file": ("manual.txt", b"text", "text/plain")})
+    up = env.upload(eq, "manual.txt", b"text", "text/plain")
     assert up.status_code == 403
     rm = env.api.delete(f"{API}/{eq}/files/{env.company_id}")
     assert rm.status_code == 403
 
 
-def test_other_company_cannot_download(env, make_env):
-    """A44: a file id is not an access grant."""
+def test_second_company_sees_and_changes_nothing_of_the_first(env):
+    """A44: a second company, calling as itself, cannot read or change the first one's data.
+
+    `env.as_company` makes the same API app answer as the other company, so these are
+    the other company's own requests: its list is empty, and every id that belongs to
+    the first company is a 404, which is also what an id that never existed returns.
+    """
     eq = env.equipment("Lathe")
-    up = env.api.post(f"{API}/{eq}/files",
-                      files={"file": ("manual.txt", b"text", "text/plain")})
-    assert up.status_code == 200, up.text
-    fid = up.json()["id"]
-    intruder = env.equipment("Their lathe", company_id=env.other_company_id)
-    assert env.api.get(f"{API}/{intruder}/files/{fid}/download").status_code == 404
+    fid = env.upload(eq, "manual.txt", b"text", "text/plain").json()["id"]
+    with env.as_company(env.other_company_id):
+        assert env.api.get(API).json()["items"] == []
+        assert env.api.get(f"{API}/{eq}").status_code == 404
+        assert env.api.get(f"{API}/{eq}/files/{fid}/download").status_code == 404
+        assert env.api.patch(f"{API}/{eq}/field/name", json={"value": "Taken"}).status_code == 404
+        assert env.api.post(f"{API}/{eq}/archive").status_code == 404
+        assert env.api.delete(f"{API}/{eq}/files/{fid}").status_code == 404
+        own = env.equipment("Press", company_id=env.other_company_id)
+        assert env.api.get(f"{API}/{own}/files/{fid}/download").status_code == 404
+        assert env.api.delete(f"{API}/{own}/files/{fid}").json() == {"deleted": False}
+    first = env.rows("acme_equipment", company_id=env.company_id)
+    assert [r["name"] for r in first] == ["Lathe"] and first[0]["archived_at"] is None
+    assert len(env.rows("acme_equipment_file")) == 1
+    assert env.api.get(f"{API}/{eq}/files/{fid}/download").status_code == 200
+
+
+def test_file_is_reached_only_through_its_own_equipment(env):
+    """A file id under another machine of the same company is not found and not deleted."""
+    eq, other = env.equipment("Lathe"), env.equipment("Press")
+    fid = env.upload(eq, "manual.txt", b"text", "text/plain").json()["id"]
+    assert env.api.get(f"{API}/{other}/files/{fid}/download").status_code == 404
+    assert env.api.delete(f"{API}/{other}/files/{fid}").json() == {"deleted": False}
+    assert len(env.rows("acme_equipment_file")) == 1
 
 
 def test_write_401_redirects_to_login(env):
@@ -236,7 +258,7 @@ def test_upload_rejects_empty_oversize_and_bad_mime(env):
         "size": ("huge.txt", b"x" * (50 * 1024 * 1024 + 1), "text/plain"),
     }
     for label, payload in cases.items():
-        r = env.api.post(f"{API}/{eq}/files", files={"file": payload})
+        r = env.upload(eq, *payload)
         assert r.status_code == 422, f"{label}: got {r.status_code}"
     assert env.rows("acme_equipment_file") == []
 
@@ -248,10 +270,9 @@ def test_upload_storage_failure_returns_500(env, monkeypatch):
     async def _boom(*a, **kw):
         raise OSError("no space left on device")
 
-    monkeypatch.setattr(attachments, "store_upload", _boom)
+    monkeypatch.setattr(attachments, "store_file", _boom)
     eq = env.equipment("Lathe")
-    r = env.api.post(f"{API}/{eq}/files",
-                     files={"file": ("manual.txt", b"text", "text/plain")})
+    r = env.upload(eq, "manual.txt", b"text", "text/plain")
     assert r.status_code == 500
     assert r.json()["detail"] == "Upload failed, the file was not saved"
     assert env.rows("acme_equipment_file") == []
@@ -260,8 +281,7 @@ def test_upload_storage_failure_returns_500(env, monkeypatch):
 def test_download_streams_rather_than_redirects(env):
     """A41: the module serves the bytes; the storage path stays server side."""
     eq = env.equipment("Lathe")
-    fid = env.api.post(f"{API}/{eq}/files",
-                       files={"file": ("manual.txt", b"how to service it", "text/plain")}).json()["id"]
+    fid = env.upload(eq, "manual.txt", b"how to service it", "text/plain").json()["id"]
     r = env.api.get(f"{API}/{eq}/files/{fid}/download", follow_redirects=False)
     assert r.status_code == 200
     assert r.content == b"how to service it"
@@ -282,8 +302,7 @@ def test_download_missing_storage_key_404(env):
 def test_download_row_present_bytes_missing(env, tmp_path):
     """A40: a row whose bytes vanished is a distinct, honest 404."""
     eq = env.equipment("Lathe")
-    fid = env.api.post(f"{API}/{eq}/files",
-                       files={"file": ("manual.txt", b"bytes", "text/plain")}).json()["id"]
+    fid = env.upload(eq, "manual.txt", b"bytes", "text/plain").json()["id"]
     for path in (tmp_path / "static" / "attachments").rglob("*"):
         if path.is_file():
             path.unlink()
@@ -295,9 +314,23 @@ def test_download_row_present_bytes_missing(env, tmp_path):
 def test_download_sanitises_filename_header(env):
     """A42: a filename is data, and data never becomes a second response header."""
     eq = env.equipment("Lathe")
-    fid = env.api.post(f"{API}/{eq}/files",
-                       files={"file": ("man\r\nual.txt", b"bytes", "text/plain")}).json()["id"]
+    refused = env.upload(eq, "man\r\nual.txt", b"bytes", "text/plain")
+    assert refused.status_code == 422
+    assert refused.json()["detail"] == "File name cannot contain control characters"
+    assert env.rows("acme_equipment_file") == []
+    fid = env.upload(eq, "man;ual ü.txt", b"bytes", "text/plain").json()["id"]
     r = env.api.get(f"{API}/{eq}/files/{fid}/download")
     assert r.status_code == 200
     disposition = r.headers["content-disposition"]
-    assert "\r" not in disposition and "\n" not in disposition
+    assert disposition.startswith('attachment; filename="manual ?.txt"; '), disposition
+
+
+def test_upload_that_is_not_base64_is_refused(env):
+    """The UI sends file bytes base64-encoded; anything else is refused, not stored."""
+    eq = env.equipment("Lathe")
+    r = env.api.post(f"{API}/{eq}/files", json={"filename": "manual.txt",
+                                               "content_type": "text/plain",
+                                               "content": "not base64!"})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "The file content is not base64"
+    assert env.rows("acme_equipment_file") == []
