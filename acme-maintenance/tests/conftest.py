@@ -7,9 +7,10 @@ both up in-process against SQLite and wires Celerp's api_request straight into
 the API app, so a request to `/maintenance` exercises the real render path, the
 real api_request call, and the real database write with nothing mocked in between.
 
-Copying this file into your own module is the intended use. The three things to
-change are the imports at the top, `MODULE_TABLE_PREFIX`, and the stub company
-payload if your pages read fields this one does not.
+Copying this file into your own module is the intended use. The four things to
+change are the imports at the top, the module name passed to `load_all`,
+`MODULE_TABLE_PREFIX`, and the stub company payload if your pages read fields this
+one does not.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import json
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -37,6 +39,14 @@ from celerp.services.auth import (
     get_current_role,
     get_current_user,
 )
+
+# Celerp admits the module before its code runs, as it does at boot: the module
+# reads its own shipped files (read_resource) while it is imported.
+from celerp.modules import loader
+
+_MODULE_DIR = Path(__file__).resolve().parents[2]
+_LOADED = loader.load_all(str(_MODULE_DIR), {"acme-maintenance"})
+assert [m["name"] for m in _LOADED] == ["acme-maintenance"], loader.load_errors()
 
 # Importing the models module registers this module's tables on the shared Base.
 # The tables are then looked up by NAME (see `Env.table`) rather than by importing

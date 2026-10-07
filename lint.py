@@ -62,7 +62,8 @@ import sys
 from pathlib import Path
 
 # Kept in sync with celerp/modules/loader.py _PROTECTED_BSL_INTERNALS.
-PROTECTED = {"celerp.session_gate", "celerp.ai", "celerp.gateway", "celerp.connectors"}
+PROTECTED = {"celerp.session_gate", "celerp.ai", "celerp.gateway", "celerp.connectors",
+             "celerp.credentials"}
 REQUIRED_FIELDS = ("name", "version", "display_name", "license")
 # The longest module name Celerp accepts (celerp/modules/importer.py _NAME_MAX).
 NAME_MAX = 64

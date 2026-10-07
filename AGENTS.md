@@ -97,7 +97,7 @@ file contains the string.
 
 **3. Use the shared components rather than a lookalike.** `page_header`
 (`ui/components/shell.py:2571`) puts search and actions in the header at the house
-size. `display_cell` (`ui/components/table.py:1163`) and `editable_cell`
+size. `display_cell` (`ui/components/table.py:1159`) and `editable_cell`
 (`ui/components/table.py:938`) give you double-click-to-edit, ESC to cancel,
 save-on-blur, and `--` for an empty value, all pointed at your own routes through
 `patch_url` and `edit_url`. `files_section` (`ui/components/files.py:72`) renders
@@ -107,7 +107,7 @@ hand-rolled version would drift from the rest of the app the first time core cha
 **4. Gate reads and writes with a permission key, and use an existing one.**
 Permission keys are a closed registry (`celerp/services/permissions.py:56`), and
 the loader refuses a module whose slot entries name a key outside it, in either
-`permission` or `write_permission` (`celerp/modules/loader.py:2287`), so a module
+`permission` or `write_permission` (`celerp/modules/loader.py:2501`), so a module
 cannot invent one today. Pick the
 key that matches what the page does. The API router depends on `require_permission`
 (`acme-maintenance/acme_maintenance/routes.py:57`) and the sidebar hides an entry
@@ -120,12 +120,12 @@ hand-made request.
 not an error to the loader, it is ignored, so a misspelled gate ships wide open in
 silence. `min_role` is the classic: it looks like it gates the nav entry and it does
 nothing at all. There is no `icon` key either. The loader reads route modules by
-name (`celerp/modules/loader.py:1511`), and `lint.py` holds the full list of accepted
+name (`celerp/modules/loader.py:1727`), and `lint.py` holds the full list of accepted
 keys. `api_routes` and `ui_routes` each name a file inside the module that defines
-its own `setup_api_routes` or `setup_ui_routes` (`celerp/modules/loader.py:621`). The
+its own `setup_api_routes` or `setup_ui_routes` (`celerp/modules/loader.py:656`). The
 manifest `name` must equal the module's folder name, start with a letter or digit, and
 hold only letters, digits, `-` and `_`, 64 characters at most
-(`celerp/modules/importer.py:80`). Every top-level manifest field must also hold the one type Celerp reads it as.
+(`celerp/modules/importer.py:86`). Every top-level manifest field must also hold the one type Celerp reads it as.
 `lint.py` reports an ignored key as its own kind of finding, separate from a
 problem the loader refuses, and exits 1 on either. A slot name is not like a key:
 the loader refuses a module that fills a slot Celerp does not read, and `lint.py`
@@ -158,10 +158,10 @@ key, carrying an unknown one, naming a `result_key` outside the two the
 aggregator reads, or a handler the loader would refuse.
 
 Every slot entry, in any slot, follows the same rules from Celerp 2.5.4
-(`celerp/modules/loader.py:2260`). A module may fill every slot in `lint.PUBLIC_SLOTS`;
+(`celerp/modules/loader.py:2474`). A module may fill every slot in `lint.PUBLIC_SLOTS`;
 `inventory_in_production` is filled by Celerp's own modules only. Each entry is a
 dict, and carries what the code reading its slot takes from it, in the type it
-reads it as (`celerp/modules/loader.py:2230`): a `nav` `order` is a number, a
+reads it as (`celerp/modules/loader.py:2444`): a `nav` `order` is a number, a
 `send_to_targets` entry names its `doc_type`, a `catalog_channel` its `id`, a
 `category_schema` entry its `category` and a list of `fields`, each a dict with a
 text `key`, and a `bulk_action` `action_type` is `htmx` or `navigate`.
@@ -175,37 +175,37 @@ string, and no prefix starts with another: within the module, across enabled
 modules, or against Celerp's own `sys.`, `mp.` and `shop.sync.`
 (`celerp/modules/slots.py`, `KERNEL_PROJECTION_PREFIXES`). A slot that names code to run (its `handler`, or `render` for the
 `doc_detail_*` slots) gives one `module:function` that resolves to a callable in
-this module's own files, async exactly where Celerp awaits it (`celerp/modules/loader.py:2499`).
+this module's own files, async exactly where Celerp awaits it (`celerp/modules/loader.py:2712`).
 The `item_lineage_guard` handler is called with keyword arguments only, so it
 takes exactly `session, entry, transition`: no other parameter, none
-positional-only, and no `*args` or `**kwargs` (`celerp/modules/loader.py:2105`).
+positional-only, and no `*args` or `**kwargs` (`celerp/modules/loader.py:2319`).
 
 The tables a module creates must start with its `table_prefix`: at least 3
 characters, ending in `_`, and no table Celerp keeps for itself may start with it,
-so `label_`, `marketplace_` and `bank_` are taken (`celerp/modules/importer.py:247`). Two installed
+so `label_`, `marketplace_` and `bank_` are taken (`celerp/modules/importer.py:253`). Two installed
 modules' prefixes may not overlap either: neither prefix may be a prefix of the
-other (`celerp/modules/importer.py:321`). Only the installation knows the other
+other (`celerp/modules/importer.py:327`). Only the installation knows the other
 modules, so `lint.py` checks every rule here except that last one. A module whose
 code defines a table outside its prefix, or any table without one, is taken out
-before any table is created (`celerp/modules/loader.py:1575`).
+before any table is created (`celerp/modules/loader.py:1791`).
 
 A module's package names are its own. The module folder, and each package or
 importable file (source, compiled or extension) directly inside it, is a name
 Python imports it by, so none of them may
 be a name Python, Celerp, an installed package or another module already uses: no `json.py`, no
-`ui/` package, nothing starting `celerp_` (`celerp/modules/loader.py:737`).
+`ui/` package, nothing starting `celerp_` (`celerp/modules/loader.py:772`).
 
 **6. New tables come from your models; changes to shipped tables come from
 migrations.** Module models register on Celerp's shared metadata when the loader
 imports them, and Celerp runs `create_all` after loading modules
-(`celerp/main.py:301`), so a new table appears on the next launch. A module that
+(`celerp/main.py:309`), so a new table appears on the next launch. A module that
 fails to load, or whose routes fail to register, gets none of its tables created
-(`celerp/modules/loader.py:1231`). `create_all`
+(`celerp/modules/loader.py:1321`). `create_all`
 cannot alter an existing table, so any change to a table you have shipped is a
 migration. Celerp runs every file in the manifest's `migrations` package at each
 start, in filename order, before the module loads
 (`celerp/modules/migrations_runner.py:167`), and only from a package inside the module
-folder (`celerp/modules/loader.py:591`). It keeps no version record, so each
+folder (`celerp/modules/loader.py:626`). It keeps no version record, so each
 step checks before it acts and is safe to run again, and every table a migration
 touches must start with the manifest's `table_prefix`.
 
@@ -219,7 +219,7 @@ rather than serving a bare fragment as a document.
 renders an empty list, because "nothing here" and "we could not ask" are different
 facts and the user acts differently on each. A rejected edit comes back as the
 editor with the value still in it, marked `cell--error` and carrying the reason in
-its `title`, which is how core marks one (`ui/routes/inventory.py:2589`); a
+its `title`, which is how core marks one (`ui/routes/inventory.py:2587`); a
 toast on its own vanishes and leaves the refused value looking accepted. A list a
 user cannot load is not a list they should be told is empty.
 
@@ -234,13 +234,13 @@ user cannot load is not a list they should be told is empty.
   your own or read Celerp's address. It takes a JSON body or query parameters, so
   this module uploads a file as base64 in JSON.
 - `read_resource(__file__, "relative/path")` reads a file the module ships, from
-  the caller's own folder or below (`celerp/modules/api.py:50`). It checks the
+  the caller's own folder or below (`celerp/modules/api.py:51`). It checks the
   calling file, so call it from the module file whose `__file__` you pass; this
   module reads its print rule at import time
   (`acme-maintenance/acme_maintenance/ui_routes.py:96`).
 - `ai_query(query, company_id, session_token=None, db_session=None)` runs an AI
   query through Celerp's AI service, for the request's company and a role allowed
-  to use the AI assistant (`celerp/modules/api.py:68`). It is the only way a module
+  to use the AI assistant (`celerp/modules/api.py:78`). It is the only way a module
   uses AI.
 
 Three rules follow, and they decide whether a module can be listed:
@@ -256,27 +256,28 @@ Three rules follow, and they decide whether a module can be listed:
 ## What you may not import
 
 Module code must not import `celerp.session_gate`, `celerp.ai` or anything under
-it, `celerp.gateway`, or `celerp.connectors`. Those are licensed internals, and the
-loader refuses to load a module that reaches into them, matching each name and
-everything beneath it (`celerp/modules/loader.py:83`) - not a warning, the module
-simply does not start. Use `celerp.modules.api` instead. Everything else in
-`celerp.services` and `ui.components` is fair game, and this module uses both.
+it, `celerp.gateway`, `celerp.connectors`, or `celerp.credentials`. Those are
+licensed internals, and the loader refuses to load a module that reaches into them,
+matching each name and everything beneath it (`celerp/modules/loader.py:88`) - not
+a warning, the module simply does not start. Use `celerp.modules.api` instead.
+Everything else in `celerp.services` and `ui.components` is fair game, and this
+module uses both.
 
 ## What is checked mechanically
 
 Three of these rules are enforced, so a mistake surfaces before a restart rather
 than in front of a user:
 
-- Rule 1 and rule 5 are checked by `lint.py:767` and `lint.py:316`, the slot
-  and table rules above by `lint.py:545` and `lint.py:879`, the package name rule by
-  `lint.py:860`, and the route module and migrations rules by `lint.py:721` and
-  `lint.py:747`. `tests/test_core_parity.py`
+- Rule 1 and rule 5 are checked by `lint.py:768` and `lint.py:317`, the slot
+  and table rules above by `lint.py:546` and `lint.py:880`, the package name rule by
+  `lint.py:861`, and the route module and migrations rules by `lint.py:722` and
+  `lint.py:748`. `tests/test_core_parity.py`
   loads each case through Celerp's own loader and fails wherever lint and the loader
   disagree. Run
   `python lint.py acme-maintenance` (or your renamed folder) before every restart.
 - Rule 2 is checked by a test that renders every view and fails on any class core
   neither styles nor emits: `acme-maintenance/tests/test_render.py:344`.
-- The protected-import rule above is checked by `lint.py` as well (`lint.py:263`),
+- The protected-import rule above is checked by `lint.py` as well (`lint.py:264`),
   so you find out before a restart rather than from a module that will not load,
   and so is a shipped `requirements.txt`. `tests/test_core_parity.py` also checks
   that the three helpers keep the signatures this module calls them with.
@@ -296,39 +297,39 @@ Each `path:line` above, with the exact text of that line. Paths under `celerp/` 
 - `acme-maintenance/acme_maintenance/ui_routes.py:548`: `return HTMLResponse(to_xml(block),`
 - `acme-maintenance/acme_maintenance/ui_routes.py:96`: `CALENDAR_PRINT_CSS = read_resource(__file__, "resources/calendar-print.css").decode("utf-8")`
 - `acme-maintenance/tests/test_render.py:344`: `def test_all_emitted_classes_exist_in_core_css(env):`
-- `celerp/main.py:301`: `await conn.run_sync(Base.metadata.create_all)`
+- `celerp/main.py:309`: `await conn.run_sync(Base.metadata.create_all)`
 - `celerp/modules/api.py:24`: `async def api_request(`
-- `celerp/modules/api.py:50`: `def read_resource(module_file: str, relative_path: str) -> bytes:`
-- `celerp/modules/api.py:68`: `async def ai_query(`
-- `celerp/modules/importer.py:247`: `def reserved_tables(name: str) -> frozenset[str]:`
-- `celerp/modules/importer.py:321`: `def table_prefix_problem(name: str, prefix: object,`
-- `celerp/modules/importer.py:80`: `def _validate_name(name: str, *, official: bool = False) -> None:`
-- `celerp/modules/loader.py:1231`: `def _drop_tables(names: set[str]) -> None:`
-- `celerp/modules/loader.py:1511`: `route_mod_path = manifest.get(manifest_key)`
-- `celerp/modules/loader.py:1575`: `def _stray_table_problem(manifest: dict) -> str | None:`
-- `celerp/modules/loader.py:2105`: `_HANDLER_KEYWORDS = {`
-- `celerp/modules/loader.py:2230`: `_SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {`
-- `celerp/modules/loader.py:2260`: `def _validate_slot_entry(slot: str, item) -> None:`
-- `celerp/modules/loader.py:2287`: `if key in item and not is_permission_key(item[key]):`
-- `celerp/modules/loader.py:2499`: `def _check_owned_callable(`
-- `celerp/modules/loader.py:591`: `def module_migration_files(pkg_path: Path, migrations_pkg) -> list[Path]:`
-- `celerp/modules/loader.py:621`: `def _check_route_source(pkg_path: Path, manifest: dict, kind: str) -> None:`
-- `celerp/modules/loader.py:737`: `def _check_import_names(name: str, pkg_path: Path) -> None:`
-- `celerp/modules/loader.py:83`: `_PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({`
+- `celerp/modules/api.py:51`: `def read_resource(module_file: str, relative_path: str) -> bytes:`
+- `celerp/modules/api.py:78`: `async def ai_query(`
+- `celerp/modules/importer.py:253`: `def reserved_tables(name: str) -> frozenset[str]:`
+- `celerp/modules/importer.py:327`: `def table_prefix_problem(name: str, prefix: object,`
+- `celerp/modules/importer.py:86`: `def _validate_name(name: str, *, official: bool = False) -> None:`
+- `celerp/modules/loader.py:1321`: `def _drop_tables(names: set[str]) -> None:`
+- `celerp/modules/loader.py:1727`: `route_mod_path = manifest.get(manifest_key)`
+- `celerp/modules/loader.py:1791`: `def _stray_table_problem(manifest: dict) -> str | None:`
+- `celerp/modules/loader.py:2319`: `_HANDLER_KEYWORDS = {`
+- `celerp/modules/loader.py:2444`: `_SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {`
+- `celerp/modules/loader.py:2474`: `def _validate_slot_entry(slot: str, item) -> None:`
+- `celerp/modules/loader.py:2501`: `if key in item and not is_permission_key(item[key]):`
+- `celerp/modules/loader.py:2712`: `def _check_owned_callable(`
+- `celerp/modules/loader.py:626`: `def module_migration_files(pkg_path: Path, migrations_pkg) -> list[Path]:`
+- `celerp/modules/loader.py:656`: `def _check_route_source(pkg_path: Path, manifest: dict, kind: str) -> None:`
+- `celerp/modules/loader.py:772`: `def _check_import_names(name: str, pkg_path: Path) -> None:`
+- `celerp/modules/loader.py:88`: `_PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({`
 - `celerp/modules/migrations_runner.py:167`: `async def run_migration_phase(engine, admission: loader.Admission) -> loader.Admission:`
 - `celerp/services/app_paths.py:12`: `def is_app_local_path(path) -> bool:`
 - `celerp/services/permissions.py:56`: `PERMISSIONS: list[Permission] = [`
-- `lint.py:263`: `def _protected_imports(py_file: Path) -> set[str]:`
-- `lint.py:316`: `def _ignored_parts(manifest: dict) -> list[str]:`
-- `lint.py:545`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:721`: `def _route_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:747`: `def _migrations_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:767`: `def _str_rendered_fragments(py_file: Path) -> list[str]:`
-- `lint.py:860`: `def _import_name_problems(folder: Path) -> list[str]:`
-- `lint.py:879`: `def _table_prefix_problems(manifest: dict) -> list[str]:`
+- `lint.py:264`: `def _protected_imports(py_file: Path) -> set[str]:`
+- `lint.py:317`: `def _ignored_parts(manifest: dict) -> list[str]:`
+- `lint.py:546`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:722`: `def _route_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:748`: `def _migrations_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:768`: `def _str_rendered_fragments(py_file: Path) -> list[str]:`
+- `lint.py:861`: `def _import_name_problems(folder: Path) -> list[str]:`
+- `lint.py:880`: `def _table_prefix_problems(manifest: dict) -> list[str]:`
 - `ui/components/files.py:72`: `def files_section(`
 - `ui/components/shell.py:2376`: `def _allowed(item: dict) -> bool:`
 - `ui/components/shell.py:2571`: `def page_header(title: str, *actions: FT) -> FT:`
-- `ui/components/table.py:1163`: `def display_cell(`
+- `ui/components/table.py:1159`: `def display_cell(`
 - `ui/components/table.py:938`: `def editable_cell(`
-- `ui/routes/inventory.py:2589`: `edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()`
+- `ui/routes/inventory.py:2587`: `edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()`
