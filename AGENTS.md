@@ -31,7 +31,7 @@ ways:
   say a check passed unless you read the green result, and never skip a failure.
 - A connector cannot fork either, so the person forks `celerp/community-modules`
   on GitHub and gives you the fork's address. Through the connector, create a
-  branch in the fork from its `main`, change `index.json` only, and open the pull
+  branch in the fork from its `main`, change `index-v2.json` only, and open the pull
   request into `celerp/community-modules` (step 6). If the connector cannot open a
   pull request across forks, give the person
   `https://github.com/celerp/community-modules/compare/main...<owner>:<fork>:<branch>?expand=1`
@@ -42,7 +42,7 @@ ways:
 1. **Make it theirs.** Agree a short id: lowercase letters, digits and hyphens. It
    must not start with `celerp`, look like Celerp, or match the name or id of a
    module already in
-   <https://github.com/celerp/community-modules/blob/main/index.json>
+   <https://github.com/celerp/community-modules/blob/main/index-v2.json>
    (`acme-maintenance` is taken by this template). Rename `acme-maintenance/` to the
    id and the inner package `acme_maintenance/` to the id with underscores. The
    folder you replace must be deleted, not left beside the new one: the checks find
@@ -82,26 +82,26 @@ ways:
    listed.
 6. **Submit it.** The submission is a pull request to `celerp/community-modules`
    opened from the GitHub account that owns the module's repository. It changes
-   `index.json` only; the catalog's `README.md` is rebuilt after merge.
+   `index-v2.json` only; the catalog's `README.md` is rebuilt after merge.
    - Take the full 40-character id of the commit at the head of the default branch
      (terminal: `git rev-parse HEAD` after the push, and check it matches GitHub;
      chat: read it through the connector).
    - Fork `celerp/community-modules` into the person's account (terminal:
      `gh repo fork celerp/community-modules --clone`; chat: the person forks it on
      GitHub) and branch from its `main`.
-   - Add one entry to `index.json` with `id`, `name`, `description`,
+   - Add one entry to `index-v2.json` with `id`, `name`, `description`,
      `"tier": "community"`, `repo` (`https://github.com/<owner>/<repository>`),
      `commit`, `author`, `license`, `data_access` and `network_calls`, and no
      `version`. Official entries stay first; community entries sort by `id`.
      From a terminal, `python3 scripts/validate_index.py` checks it.
-   - Commit `index.json`, and open the pull request against `main`. Give the
+   - Commit `index-v2.json`, and open the pull request against `main`. Give the
      person its link.
 7. **Follow it through.** An automatic listing check posts one comment on the pull
    request and keeps it current. When every check passes, the pull request is
    merged automatically and the module appears in the Community Modules tab of
    every Celerp on its next catalog refresh. A comment headed "Listing check:
    changes needed" lists what to fix: fix the module, commit it to the default
-   branch, and set `commit` in the same pull request's `index.json` to the new head;
+   branch, and set `commit` in the same pull request's `index-v2.json` to the new head;
    the check runs again. "Listing check: waiting for the maintainer" means
    something in the code was flagged for a person to look at; tell them what, and
    wait.
