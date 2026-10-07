@@ -6,7 +6,10 @@ Checks the rules the Celerp 2.5.4 loader enforces that need only the module's ow
 files, so you catch problems in seconds instead of on a failed boot. Where it cannot
 tell without running the module's code it refuses rather than guesses, and it cannot
 see other installed modules:
-  - the folder has an __init__.py with a PLUGIN_MANIFEST
+  - the folder has an __init__.py with a PLUGIN_MANIFEST, bound once as one
+    top-level literal and never changed or used elsewhere in that file
+  - the module holds no link, to a file or a folder, and every file and folder in
+    it can be read
   - the manifest has the required identity fields and at least one slot/route
   - the module name is letters, digits, '-' and '_' (64 at most), matches its
     folder, and does not start with the reserved `celerp-` or `celerp_` (in any
@@ -18,7 +21,13 @@ see other installed modules:
     from the module's own files) a plain, not async, setup_api_routes or
     setup_ui_routes
   - migrations names a package inside the module, and no migration file in it is a
-    link to a file outside the module
+    link (the link check above names it too)
+  - every file Celerp runs for the module (__init__.py, the route modules, each
+    callable slot's module and each migration file), and every file of the module
+    those import, parses as UTF-8 Python
+  - none of that code writes names dynamically (globals(), vars(), setattr by a
+    computed name, exec, a write to a function's __code__) where it could change
+    a callable Celerp calls, or the manifest
   - every slot entry follows the rules the Celerp 2.5.4 loader enforces before it
     loads a module: entries are dicts; each key the slot's page or service reads
     holds the type it reads it as, and the keys it needs are there; a permission
@@ -60,6 +69,7 @@ the reason, when there is no module folder or more than one.
 from __future__ import annotations
 
 import ast
+import fnmatch
 import importlib.machinery
 import os
 import re
@@ -241,29 +251,360 @@ ENTRY_TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true
                     list: "a list", type(None): "None"}
 
 
+# The names Celerp never reads when it checks a module's files, matched against each
+# file and folder name (celerp/modules/loader.py _DIGEST_EXCLUDE_GLOBS).
+TREE_EXCLUDE_GLOBS = ("__pycache__", "*.pyc", ".git", ".github", ".coverage", ".coverage.*",
+                      "htmlcov", ".pytest_cache", ".celerp-meta.json", ".celerp-premium")
+# Names whose use writes a module's namespace in a way its source cannot show
+# (celerp/modules/loader.py, the constants of the same names): the namespace
+# mappings, code built from strings, and the attribute writers reached through an
+# attribute or by name; attribute access by a name held in a value, with where
+# that name sits among the call's arguments (None: every argument is a name); and
+# the attributes that change what an existing def runs.
+NAMESPACE_WRITERS = frozenset({"globals", "vars", "exec", "eval", "__builtins__"})
+MAPPING_WRITERS = frozenset({
+    "update", "setdefault", "pop", "popitem", "clear", "__setitem__", "__delitem__"})
+NAMESPACE_WRITER_ATTRS = NAMESPACE_WRITERS | {
+    "locals", "__dict__", "setattr", "delattr", "__setattr__", "__delattr__", "__getattribute__",
+    "__globals__", "f_globals", "f_locals", "get_referrers", "get_referents", "get_objects"}
+ATTR_BY_NAME = {"setattr": 1, "delattr": 1, "getattr": 1, "attrgetter": None, "methodcaller": 0}
+FUNCTION_INTERNALS = frozenset({"__code__", "__defaults__", "__kwdefaults__", "__class__"})
+
+
+# ── the module's files and source ────────────────────────────────────────────
+# Celerp reads every file of a module before it runs any of it, and never follows a
+# link to do so, so a link anywhere in the module, or a file it cannot read, refuses
+# the module. lint.py walks the folder once (_module_files) and every check of the
+# whole module reads that list. Python source is read one way (_parse), and the code
+# Celerp will run is found one way: from the files it runs for the module, through
+# the module's own imports (_reachable_sources). The manifest, route and callable
+# checks, the parse check and the dynamic-write check all read source through these.
+
+def _excluded(name: str) -> bool:
+    return any(fnmatch.fnmatch(name, pattern) for pattern in TREE_EXCLUDE_GLOBS)
+
+
+def _module_files(folder: Path) -> tuple[list[Path], list[str]]:
+    """(every readable file in `folder`, why Celerp could not check the folder's
+    files): each link, to a file or a folder, and each file or folder that cannot be
+    read. Under a name Celerp never reads (TREE_EXCLUDE_GLOBS) neither is a problem.
+    Links are listed, never followed."""
+    files: list[Path] = []
+    problems: list[str] = []
+
+    def refuse(path: Path, why: str) -> None:
+        rel = path.relative_to(folder)
+        if not any(_excluded(part) for part in rel.parts):
+            problems.append(f"{rel}: {why}")
+
+    def unreadable(error: OSError) -> None:
+        refuse(Path(error.filename), "cannot be read - Celerp refuses a module it cannot "
+                                     "read every file of")
+
+    for root, dirs, names in os.walk(folder, onerror=unreadable):
+        here = Path(root)
+        for name in sorted(dirs + names):
+            path = here / name
+            if path.is_symlink():
+                refuse(path, "is a link - Celerp refuses a module holding a link; put the "
+                             "file or folder itself in the module")
+            elif name in names and path.is_file():
+                try:
+                    with path.open("rb"):
+                        files.append(path)
+                except OSError:
+                    unreadable(OSError(None, None, str(path)))
+    return sorted(files), problems
+
+
+def _parse(path: Path) -> tuple[ast.Module | None, str | None]:
+    """(the parsed source of `path`, None), or (None, why it cannot be). Read as
+    UTF-8, as Celerp reads it (loader._parse_source)."""
+    try:
+        return ast.parse(path.read_text(encoding="utf-8")), None
+    except SyntaxError as exc:
+        return None, f"does not parse (line {exc.lineno}: {exc.msg})"
+    except (OSError, ValueError) as exc:
+        return None, f"cannot be read as UTF-8 Python source ({type(exc).__name__})"
+
+
+def _bound_names(node) -> list[str]:
+    """The names one AST node binds (or deletes) in its scope: definitions,
+    imports, assignment targets, global and nonlocal declarations, match
+    captures and except-as names (importer._bound_names)."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [(a.asname or a.name).split(".")[0] for a in node.names]
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return [node.id]
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return list(node.names)
+    if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)):
+        return [node.name] if node.name else []
+    if isinstance(node, ast.MatchMapping):
+        return [node.rest] if node.rest else []
+    return []
+
+
+def _manifest_node(tree: ast.Module) -> tuple[ast.Assign | None, str | None]:
+    """(the `PLUGIN_MANIFEST = {...}` statement, None), (None, None) when there is
+    none, or (None, why) when the source binds, changes or reads the name anywhere
+    else, or a later star import may replace it: Python binds the last assignment
+    and runs every change, so the one literal must be the only mention for it to be
+    what the module declares (importer._manifest_node)."""
+    uses = [n for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and n.id == "PLUGIN_MANIFEST"
+            or "PLUGIN_MANIFEST" in _bound_names(n)]
+    node = next((n for n in tree.body if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == "PLUGIN_MANIFEST"
+                         for t in n.targets)), None)
+    if node is not None:  # a later star import may rebind it
+        uses += [n for n in tree.body if isinstance(n, ast.ImportFrom)
+                 and any(a.name == "*" for a in n.names) and n.lineno > node.lineno]
+    if node is None and not uses:
+        return None, None
+    if node is None or len(node.targets) != 1 or uses != [node.targets[0]]:
+        return None, ("PLUGIN_MANIFEST must be bound once, as one top-level literal, and "
+                      "never changed or used elsewhere in __init__.py")
+    return node, None
+
+
 def _load_manifest(init_file: Path) -> tuple[dict | None, str | None]:
     """Return (manifest, error). A syntax error in `__init__.py` is the most
     common first mistake, so it is reported by name instead of raised as a
     traceback - the point of this script is to name the problem."""
+    tree, why = _parse(init_file)
+    if tree is None:
+        return None, why
+    node, why = _manifest_node(tree)
+    if node is None:
+        return None, why
     try:
-        tree = ast.parse(init_file.read_text())
-    except SyntaxError as exc:
-        return None, f"could not parse the file (line {exc.lineno}: {exc.msg})"
-    except (OSError, UnicodeDecodeError) as exc:
-        return None, f"could not be read ({exc})"
+        manifest = ast.literal_eval(node.value)
+    except Exception:
+        return None, None
+    if not isinstance(manifest, dict):
+        return None, f"PLUGIN_MANIFEST must be a dict, not {type(manifest).__name__}"
+    return manifest, None
+
+
+def _top_level_binding(tree: ast.Module, name: str):
+    """The one statement that binds `name` in a module, when that is the only
+    place the source binds (or deletes) it at all, it sits at the top level and
+    no later star import can rebind it; else None (loader._top_level_binding)."""
+    bindings = [node for node in ast.walk(tree) if name in _bound_names(node)]
+    if len(bindings) != 1:
+        return None
+    (binding,) = bindings
+    if any(isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names)
+           and n.lineno > binding.lineno for n in tree.body):
+        return None  # a later star import may rebind it
+    if binding in tree.body:
+        return binding
+    owner = next((n for n in tree.body if isinstance(n, (ast.Assign, ast.AnnAssign))
+                  and binding in ast.walk(n)), None)
+    return owner
+
+
+def _resolve_local_import(folder: Path, current: Path, module: str | None,
+                          level: int) -> Path | None:
+    """The source file inside `folder` that an import in `current` refers to, or
+    None when it is not the module's own code (loader._resolve_local_import): the
+    folder is on the import path, so an absolute import whose first part is a
+    package or file in it is local, and a flat module also resolves its own name.
+    Relative imports resolve from the importing file's package directory."""
+    parts = module.split(".") if module else []
+    if level:
+        base = current.parent
+        for _ in range(level - 1):
+            base = base.parent
+        if not _inside(base, folder):
+            return None
+        target = base.joinpath(*parts)
+    elif not parts:
+        return None
+    elif parts[0] == folder.name:
+        target = folder.joinpath(*parts[1:])
+    else:
+        target = folder.joinpath(*parts)
+    for cand in (target.with_suffix(".py"), target / "__init__.py"):
+        if target != folder and cand.is_file() and _inside(cand, folder):
+            return cand
+    if target == folder:
+        return folder / "__init__.py"
+    return None
+
+
+def _local_imports(folder: Path, current: Path, node) -> list[Path]:
+    """The module's own source files an import statement in `current` loads
+    (loader._local_imports)."""
+    if isinstance(node, ast.Import):
+        targets = [(alias.name, 0) for alias in node.names]
+    elif isinstance(node, ast.ImportFrom):
+        module = node.module or ""
+        targets = [(t or None, node.level) for t in [module] + [
+            f"{module}.{alias.name}" if module else alias.name for alias in node.names]]
+    else:
+        return []
+    found = (_resolve_local_import(folder, current, t, level) for t, level in targets)
+    return [f for f in found if f]
+
+
+def _reachable_sources(folder: Path, entries: list[Path]) -> tuple[dict[Path, ast.Module],
+                                                                    list[str]]:
+    """(every file of the module's own code that importing `entries` runs, parsed:
+    each entry, the module's files they import, transitively, and the package
+    __init__.py files on the way to each; why each one that cannot be read or parsed
+    is refused) (loader._reachable_sources)."""
+    trees: dict[Path, ast.Module] = {}
+    problems: list[str] = []
+    seen: set[Path] = set()
+    queue = list(entries)
+    while queue:
+        f = queue.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        tree, why = _parse(f)
+        if tree is None:
+            problems.append(f"{f.relative_to(folder)} {why} - Celerp runs it for this module, "
+                            "so it must parse before any of the module's code runs")
+            continue
+        trees[f] = tree
+        parent = f.parent if f.name != "__init__.py" else f.parent.parent
+        if (parent != folder.parent and _inside(parent, folder)
+                and (parent / "__init__.py").is_file()):
+            queue.append(parent / "__init__.py")
+        for node in ast.walk(tree):
+            queue.extend(_local_imports(folder, f, node))
+    return trees, problems
+
+
+def _module_values(tree: ast.Module) -> set[str]:
+    """Names in a source file that may hold a module object: every imported name
+    and every name assigned from sys.modules[...] or an import call
+    (loader._module_values)."""
+    names: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == "PLUGIN_MANIFEST":
-                    try:
-                        manifest = ast.literal_eval(node.value)
-                    except Exception:
-                        return None, None
-                    if not isinstance(manifest, dict):
-                        return None, (f"PLUGIN_MANIFEST must be a dict, not "
-                                      f"{type(manifest).__name__}")
-                    return manifest, None
-    return None, None
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names |= {(a.asname or a.name).split(".")[0] for a in node.names}
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and _is_module_value(node.value, names)
+                    and any(isinstance(t, ast.Name) and t.id not in names for t in node.targets)):
+                names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+                changed = True
+    return names
+
+
+def _is_module_value(node, names: set[str]) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in names
+    if isinstance(node, ast.Attribute):
+        return _is_module_value(node.value, names)
+    if isinstance(node, ast.Subscript):
+        return isinstance(node.value, ast.Attribute) and node.value.attr == "modules"
+    if isinstance(node, ast.Call):
+        fn = node.func
+        return (fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)) in (
+            "import_module", "__import__", "reload")
+    return False
+
+
+def _function_frame_nodes(tree: ast.Module) -> set[int]:
+    """The ids of the nodes in `tree` that run in a function's own frame, where
+    locals() reads that function's names and nothing else. Only a def's or
+    lambda's body does. Its decorators, defaults, annotations and type
+    parameters run in the enclosing scope when the def runs, as do a class's
+    decorators, bases and keywords; a class body is a namespace, not a frame;
+    and a comprehension or generator runs in (or is evaluated from) the scope
+    around it, which at module level is the module itself (loader._function_frame_nodes)."""
+    inside: set[int] = set()
+    stack = [(tree, False)]
+    while stack:
+        node, in_frame = stack.pop()
+        if in_frame:
+            inside.add(id(node))
+        frame: set[int] = set()
+        namespace: set[int] = set()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            frame = {id(n) for n in node.body}
+        elif isinstance(node, ast.Lambda):
+            frame = {id(node.body)}
+        elif isinstance(node, ast.ClassDef):
+            namespace = {id(n) for n in node.body}
+        stack.extend((n, id(n) in frame or (id(n) not in namespace and in_frame))
+                     for n in ast.iter_child_nodes(node))
+    return inside
+
+
+def _dynamic_write(tree: ast.Module, handlers: set[str]) -> str | None:
+    """The first construct in `tree` that may write one of `handlers` into a
+    module's namespace where the source cannot show it, or None. `handlers`
+    holds PLUGIN_MANIFEST, which only its own literal in the package
+    `__init__.py` may name (loader._dynamic_write)."""
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    called = {id(n.func) for n in calls}
+    guarded = handlers | FUNCTION_INTERNALS
+    in_function = _function_frame_nodes(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in NAMESPACE_WRITERS:
+            return node.id
+        if isinstance(node, ast.Name) and node.id == "locals":
+            if id(node) not in in_function:
+                return "locals outside a function"
+            if id(node) not in called:
+                return "locals used as a value"
+        if (isinstance(node, ast.Name) and node.id in ATTR_BY_NAME
+                and id(node) not in called):
+            return f"{node.id} used as a value"
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in NAMESPACE_WRITER_ATTRS | {"getattr", "PLUGIN_MANIFEST"}:
+                    return f"an import of {alias.name}"
+                if alias.name in ATTR_BY_NAME and alias.asname:
+                    return f"{alias.name} imported as {alias.asname}"
+        if isinstance(node, ast.Attribute):
+            if node.attr in ("attrgetter", "methodcaller") and id(node) not in called:
+                return f"{node.attr} used as a value"
+            if node.attr in NAMESPACE_WRITER_ATTRS:
+                return node.attr
+            if node.attr == "PLUGIN_MANIFEST":
+                return "PLUGIN_MANIFEST reached through a module"
+            if isinstance(node.ctx, (ast.Store, ast.Del)) and node.attr in guarded:
+                return f"an assignment to .{node.attr}"
+            if (isinstance(node.value, ast.Attribute) and node.value.attr == "modules"
+                    and node.attr in MAPPING_WRITERS):
+                return f"modules.{node.attr}"
+        if (isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del))
+                and isinstance(node.value, ast.Attribute) and node.value.attr == "modules"):
+            return "a write to sys.modules"
+    refused = guarded | NAMESPACE_WRITER_ATTRS
+    modules = None
+    for node in calls:
+        fn = node.func
+        by_target = isinstance(fn, ast.Name) and fn.id in ("setattr", "delattr", "getattr")
+        fn_name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
+        if not by_target and fn_name not in ("attrgetter", "methodcaller"):
+            continue
+        if any(isinstance(a, ast.Starred) for a in node.args) or node.keywords:
+            return f"{fn_name} with unpacked arguments"
+        at = ATTR_BY_NAME[fn_name]
+        names = node.args if at is None else node.args[at:at + 1]
+        for attr in names or [None]:
+            if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+                if set(attr.value.split(".")) & refused:
+                    return f"{fn_name} of {attr.value!r}"
+                continue
+            if not by_target:
+                return f"{fn_name} of a computed name"
+            modules = _module_values(tree) if modules is None else modules
+            if attr is None or _is_module_value(node.args[0], modules):
+                return f"{fn_name} of a computed name on a module"
+    return None
 
 
 def _protected_imports(py_file: Path) -> set[str]:
@@ -271,9 +612,8 @@ def _protected_imports(py_file: Path) -> set[str]:
     (`from celerp.ai import quota`), or by a literal handed to
     importlib.import_module or __import__ (the loader's _scan_protected_imports)."""
     hits: set[str] = set()
-    try:
-        tree = ast.parse(py_file.read_text())
-    except Exception:
+    tree, _ = _parse(py_file)
+    if tree is None:
         return hits
     for node in ast.walk(tree):
         names = []
@@ -586,8 +926,8 @@ def _slot_problems(manifest: dict, folder: Path) -> list[str]:
 # is async exactly where Celerp awaits it. lint.py proves the same from the source,
 # without running it: it follows each name to the def, async def, class or lambda
 # that binds it, through imports between the module's own files. A name it cannot
-# follow that way (a decorated function, a star import, a value a call builds) is
-# refused, since only running the code would tell.
+# follow that way (a decorated function, a star import, a value a call builds, a
+# name bound more than once) is refused, since only running the code would tell.
 
 def _module_source_file(folder: Path, module_path: str) -> Path | None:
     """The file in `folder` a dotted module path names, as the loader finds it
@@ -609,79 +949,41 @@ def _inside(path: Path, folder: Path) -> bool:
     return Path(os.path.realpath(path)).is_relative_to(os.path.realpath(folder))
 
 
-def _parsed(source: Path) -> ast.Module | None:
-    try:
-        return ast.parse(source.read_text())
-    except Exception:
-        return None
-
-
-def _binds(node: ast.AST, name: str) -> bool:
-    """Whether module-level statement `node` binds `name` (or might: a star import,
-    a del). A def or class binds only its own name; what its body binds is its own."""
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return node.name == name
-    if isinstance(node, (ast.Import, ast.ImportFrom)):
-        return any(a.name == "*" or (a.asname or a.name.split(".")[0]) == name
-                   for a in node.names)
-    if isinstance(node, ast.Name):
-        return node.id == name and not isinstance(node.ctx, ast.Load)
-    if isinstance(node, (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-        return any(isinstance(sub, ast.NamedExpr) and sub.target.id == name for sub in ast.walk(node))
-    return any(_binds(child, name) for child in ast.iter_child_nodes(node))
-
-
-def _source_callable(folder: Path, top: str, source: Path, name: str,
+def _source_callable(folder: Path, source: Path, name: str,
                      seen: set) -> tuple[ast.AST | None, str | None]:
-    """(the def, async def, class or lambda the callable `name` in `source` is, None),
-    or (None, why)."""
+    """(the undecorated def, async def, class or lambda the callable `name` in
+    `source` is, None), or (None, why): followed through plain aliases and imports
+    of the module's own files (loader._source_callable)."""
     if (source, name) in seen:
         return None, "is defined in a circle of imports"
     if not _inside(source, folder):
         return None, f"is in {source.name}, a link to a file outside the module"
     seen.add((source, name))
-    tree = _parsed(source)
+    tree, why = _parse(source)
     if tree is None:
-        return None, f"is in {source.name}, which does not parse"
-    binding = None
-    for node in tree.body:
-        if _binds(node, name):
-            binding = node
-    if binding is None:
-        return None, "is not defined there"
+        return None, f"is in {source.relative_to(folder)}, which {why}"
+    binding = _top_level_binding(tree, name)
     if isinstance(binding, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        if binding.name == name and not binding.decorator_list:
+        if not binding.decorator_list:
             return binding, None
     elif isinstance(binding, (ast.Assign, ast.AnnAssign)):
         targets = binding.targets if isinstance(binding, ast.Assign) else [binding.target]
-        if (len(targets) == 1 and isinstance(targets[0], ast.Name)
-                and targets[0].id == name):
+        if len(targets) == 1 and isinstance(targets[0], ast.Name):
             if isinstance(binding.value, ast.Lambda):
                 return binding.value, None
             if isinstance(binding.value, ast.Name):
-                return _source_callable(folder, top, source, binding.value.id, seen)
+                return _source_callable(folder, source, binding.value.id, seen)
     elif isinstance(binding, ast.ImportFrom):
-        alias = next((a for a in binding.names if (a.asname or a.name) == name), None)
-        if alias is not None:
-            pkg_dir = folder if folder.name == top else folder / top
-            if binding.level:
-                package = source.parent
-                for _ in range(binding.level - 1):
-                    package = package.parent
-                if not package.is_relative_to(pkg_dir):
-                    return None, "is imported from outside the module"
-                base = package.joinpath(*binding.module.split(".")) if binding.module else package
-                target = next((c for c in (base.with_suffix(".py"), base / "__init__.py")
-                               if binding.module and c.exists()), None)
-                if not binding.module and (package / "__init__.py").exists():
-                    target = package / "__init__.py"
-            elif (binding.module or "").split(".")[0] == top:
-                target = _module_source_file(folder, binding.module)
-            else:
-                return None, f"is imported from {binding.module!r}, outside the module"
-            if target is None:
-                return None, "is imported from a file the module does not have"
-            return _source_callable(folder, top, target, alias.name, seen)
+        alias = next(a for a in binding.names if (a.asname or a.name) == name)
+        target = _resolve_local_import(folder, source, binding.module, binding.level)
+        if target is None:
+            return None, (f"is imported from {'.' * binding.level}{binding.module or ''}, "
+                          "outside the module's own files")
+        return _source_callable(folder, target, alias.name, seen)
+    elif binding is None and not any(name in _bound_names(n) for n in ast.walk(tree)) and not any(
+            isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names)
+            for n in tree.body):
+        return None, "is not defined there"
     return None, ("cannot be followed to a def, async def, class or lambda in the module's "
                   "own files without running it")
 
@@ -690,9 +992,19 @@ def _callable_node(folder: Path, dotted) -> tuple[ast.AST | None, str | None]:
     """(the def, async def, class or lambda `dotted` names in the module's own files,
     None), or (None, why Celerp would refuse it) (the loader's _owned_callable_source
     and _source_callable)."""
+    source, why = _callable_source(folder, dotted)
+    if source is None:
+        return None, why
+    node, why = _source_callable(folder, source, dotted.split(":")[1], set())
+    return node, None if node is not None else f"{dotted!r} {why}"
+
+
+def _callable_source(folder: Path, dotted) -> tuple[Path | None, str | None]:
+    """(the file in the module `dotted` names, None), or (None, why Celerp would
+    refuse it) (loader._owned_callable_source)."""
     if not (isinstance(dotted, str) and dotted.count(":") == 1 and all(dotted.split(":"))):
         return None, f"{dotted!r} must be 'module.path:function'"
-    module_path, name = dotted.split(":")
+    module_path = dotted.split(":")[0]
     top = module_path.split(".")[0]
     if not all(module_path.split(".")):
         return None, f"{dotted!r} has an empty part in its module path"
@@ -702,12 +1014,7 @@ def _callable_node(folder: Path, dotted) -> tuple[ast.AST | None, str | None]:
     source = _module_source_file(folder, module_path)
     if source is None:
         return None, f"{dotted!r} does not name a file inside this module"
-    pkg_dir = folder if folder.name == top else folder / top
-    for init in [source, *(p / "__init__.py" for p in source.parents if p.is_relative_to(pkg_dir))]:
-        if init.exists() and _parsed(init) is None:
-            return None, f"{dotted!r}: {init.relative_to(folder)} does not parse"
-    node, why = _source_callable(folder, top, source, name, set())
-    return node, None if node is not None else f"{dotted!r} {why}"
+    return source, None
 
 
 def _callable_problems(where: str, folder: Path, dotted, awaited: bool) -> list[str]:
@@ -740,10 +1047,8 @@ def _route_problems(manifest: dict, folder: Path) -> list[str]:
         if found:
             problems += found
             continue
-        binding = None
-        for node in _parsed(_module_source_file(folder, dotted)).body:
-            if _binds(node, setup):
-                binding = node
+        tree, _ = _parse(_module_source_file(folder, dotted))
+        binding = _top_level_binding(tree, setup)
         if not isinstance(binding, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ImportFrom)):
             problems.append(f"{key} {dotted!r} must define {setup} with def, or import it "
                             "from the module's own files")
@@ -763,11 +1068,67 @@ def _migrations_problems(manifest: dict, folder: Path) -> list[str]:
     directory = folder.joinpath(*package.split("."))
     if not _inside(directory, folder):
         return [f"migrations {package!r} is a link to a folder outside the module"]
+    return [f"migration file {path.name!r} is a link to a file outside the module"
+            for path in _migration_files(manifest, folder) if not _inside(path, folder)]
+
+
+def _migration_files(manifest: dict, folder: Path) -> list[Path]:
+    """The files Celerp runs from the manifest's migrations package, in order
+    (loader.module_migration_files): each .py file in it not starting with _."""
+    package = manifest.get("migrations")
+    if not (package and all(part.isidentifier() for part in package.split("."))):
+        return []
+    directory = folder.joinpath(*package.split("."))
     if not directory.is_dir():
         return []
-    return [f"migration file {path.name!r} is a link to a file outside the module"
-            for path in sorted(directory.glob("*.py"))
-            if path.is_file() and not path.name.startswith("_") and not _inside(path, folder)]
+    return [path for path in sorted(directory.glob("*.py"))
+            if path.is_file() and not path.name.startswith("_")]
+
+
+def _entry_files(manifest: dict, folder: Path) -> list[Path]:
+    """Every file of the module Celerp runs for it (loader._module_entry_files): its
+    __init__.py, its route modules, each callable slot's module and each migration
+    file. One that is missing or outside the module is reported by its own check."""
+    files = [folder / "__init__.py"]
+    for key in ("api_routes", "ui_routes"):
+        if manifest.get(key):
+            files.append(_module_source_file(folder, manifest[key]))
+    for slot, items in _slots(manifest).items():
+        if slot in CALLABLE_SLOTS:
+            key = CALLABLE_SLOTS[slot][0]
+            files += [_callable_source(folder, item[key])[0] for item in (
+                items if isinstance(items, list) else [items])
+                if isinstance(item, dict) and key in item]
+    files += _migration_files(manifest, folder)
+    return [f for f in files if f is not None and f.is_file() and _inside(f, folder)]
+
+
+def _handler_names(manifest: dict) -> set[str]:
+    """The name of every callable Celerp calls in the module: its route setup
+    functions and each callable slot's function (loader._handler_names)."""
+    names = {f"setup_{kind}_routes" for kind in ("api", "ui") if manifest.get(f"{kind}_routes")}
+    for slot, items in _slots(manifest).items():
+        if slot in CALLABLE_SLOTS:
+            key = CALLABLE_SLOTS[slot][0]
+            names |= {item[key].split(":")[1] for item in (
+                items if isinstance(items, list) else [items])
+                if isinstance(item, dict) and isinstance(item.get(key), str) and ":" in item[key]}
+    return names
+
+
+def _source_graph_problems(manifest: dict, folder: Path) -> list[str]:
+    """Why Celerp would refuse the code it runs for the module, read before any of
+    it runs (loader._check_dynamic_writes): every file the entry files reach must
+    parse, and none may write a callable Celerp calls, or the manifest, where the
+    source cannot show it."""
+    trees, problems = _reachable_sources(folder, _entry_files(manifest, folder))
+    handlers = _handler_names(manifest) | {"PLUGIN_MANIFEST"}
+    for path, tree in sorted(trees.items()):
+        found = _dynamic_write(tree, handlers)
+        if found:
+            problems.append(f"{path.relative_to(folder)}: writes names dynamically ({found}), "
+                            "so the module's source does not show what Celerp will call")
+    return problems
 
 
 def _str_rendered_fragments(py_file: Path) -> list[str]:
@@ -777,9 +1138,8 @@ def _str_rendered_fragments(py_file: Path) -> list[str]:
     characters "rows". It raises nothing, logs nothing, and every HTMX swap
     replaces the page region with that word, which is why this check exists.
     """
-    try:
-        tree = ast.parse(py_file.read_text())
-    except Exception:
+    tree, _ = _parse(py_file)
+    if tree is None:
         return []
     found = []
     for node in ast.walk(tree):
@@ -808,13 +1168,12 @@ def _called_name(node: ast.Call) -> str | None:
     return None
 
 
-def _owned_tables(folder: Path) -> set[str]:
+def _owned_tables(files: list[Path]) -> set[str]:
     """Tables the module's models or migrations create, by literal name."""
     tables: set[str] = set()
-    for py_file in folder.rglob("*.py"):
-        try:
-            tree = ast.parse(py_file.read_text())
-        except Exception:
+    for py_file in files:
+        tree, _ = _parse(py_file) if py_file.suffix == ".py" else (None, None)
+        if tree is None:
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and any(
@@ -830,7 +1189,7 @@ def _owned_tables(folder: Path) -> set[str]:
     return tables
 
 
-def _company_backup_problems(manifest: dict, folder: Path) -> list[str]:
+def _company_backup_problems(manifest: dict, files: list[Path]) -> list[str]:
     """Every table the module owns must say whether it belongs to the company, and so
     travels with a company backup, or to this installation, like credentials or caches.
     Celerp refuses to back up a company while one of its module tables is not named."""
@@ -844,17 +1203,17 @@ def _company_backup_problems(manifest: dict, folder: Path) -> list[str]:
         if not (prefix and str(table).startswith(prefix)):
             problems.append(f"company_backup names {table!r}, which is not one of this module's "
                             f"tables (they start with table_prefix {prefix!r})")
-    for table in sorted(_owned_tables(folder) - set(declared)):
+    for table in sorted(_owned_tables(files) - set(declared)):
         problems.append(f"table {table!r} is not in company_backup - Celerp will refuse to back up "
                         "a company until it says \"include\" or \"exclude\"")
     return problems
 
 
-def _stray_table_problems(manifest: dict, folder: Path) -> list[str]:
+def _stray_table_problems(manifest: dict, files: list[Path]) -> list[str]:
     """The loader's _stray_table_problem: every table the module defines carries
     its table_prefix, so a module defining any table needs one."""
     prefix = manifest.get("table_prefix")
-    tables = sorted(_owned_tables(folder))
+    tables = sorted(_owned_tables(files))
     if tables and not (isinstance(prefix, str) and prefix):
         return [f"table {tables[0]!r} needs a table_prefix the module's tables start with - "
                 "Celerp takes out a module defining a table without one"]
@@ -909,16 +1268,16 @@ def _table_prefix_problems(manifest: dict) -> list[str]:
 def check(folder: Path) -> tuple[list[str], list[str]]:
     """(problems, ignored) for the module in `folder`: what Celerp refuses or breaks
     on, and the manifest parts it reads straight past."""
-    problems: list[str] = []
     init_file = folder / "__init__.py"
     if not init_file.exists():
         return [f"{folder}: no __init__.py (a module folder must have one)"], []
+    files, problems = _module_files(folder)
 
     manifest, error = _load_manifest(init_file)
     if error is not None:
-        return [f"{init_file}: {error}"], []
+        return problems + [f"{init_file}: {error}"], []
     if manifest is None:
-        return [f"{init_file}: no parseable PLUGIN_MANIFEST dict"], []
+        return problems + [f"{init_file}: no parseable PLUGIN_MANIFEST dict"], []
 
     # Types first: every check below reads a field only once it has the right type,
     # so a value of the wrong type is named once, as itself, and never trips them.
@@ -956,19 +1315,20 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
     if not (manifest.get("slots") or manifest.get("api_routes") or manifest.get("ui_routes")):
         ignored.append("manifest declares no slots and no routes - the module does nothing")
     problems.extend(_table_prefix_problems(manifest))
-    problems.extend(_stray_table_problems(manifest, folder))
+    problems.extend(_stray_table_problems(manifest, files))
     problems.extend(_import_name_problems(folder))
     problems.extend(_route_problems(manifest, folder))
     problems.extend(_migrations_problems(manifest, folder))
     problems.extend(_slot_problems(manifest, folder))
-    problems.extend(_company_backup_problems(manifest, folder))
+    problems.extend(_company_backup_problems(manifest, files))
+    problems.extend(_source_graph_problems(manifest, folder))
 
-    for path in sorted(folder.rglob("*")):
+    for path in files:
         if path.name.lower() == "requirements.txt":
             problems.append(f"{path.relative_to(folder)}: Celerp modules use Celerp's installed "
                             "dependencies, and Celerp installs nothing from a requirements.txt "
                             "- remove it")
-    for py_file in folder.rglob("*.py"):
+    for py_file in (f for f in files if f.suffix == ".py"):
         rel = py_file.relative_to(folder)
         hits = _protected_imports(py_file)
         for h in sorted(hits):

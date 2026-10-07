@@ -117,12 +117,22 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    whatever the folder is called, from 2.5.4 it will not load a module whose
    folder and name differ, and lint says so if the two drift apart.
 
+   Like Celerp, it refuses a module that holds a link (to a file or a folder) or
+   a file it cannot read, binds or changes `PLUGIN_MANIFEST` anywhere but its one
+   literal, or runs a file that does not parse: every file Celerp runs for the
+   module (`__init__.py`, the route modules, each slot callable's module and the
+   migrations) and every file of the module those import. Nor may that code write
+   names dynamically (`globals()`, `vars()`, `setattr` by a computed name, `exec`,
+   a write to a function's `__code__`), since the source would then not show what
+   Celerp calls.
+
    `tests/test_core_parity.py` loads every case lint checks through Celerp's own
    loader and fails wherever the two disagree. Lint is stricter in a few places,
    because it reads your code without running it: it refuses a slot callable it
    cannot follow to a `def`, `async def`, class or lambda in your own files (a
    decorated function, a star import, a `functools.partial`, a binding inside
-   `if` or `try`) and a protected import in any file, used or not. It cannot see
+   `if` or `try`), a folder no one may read, and a protected import in any file,
+   used or not. It cannot see
    other installed modules or packages, so a prefix or table clash with another
    module, or a package name another module or an installed package already
    uses, only shows when Celerp loads the module.
