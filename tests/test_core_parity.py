@@ -80,15 +80,19 @@ class Case:
     """One module: a slots manifest, extra manifest fields and source files. Strings
     in all three may say {pkg}, the module's inner package name. `links` maps a path
     in the module to a link to a file (text) or folder (dict of files) outside it;
-    `name` replaces the generated module name, folder included."""
+    `name` replaces the generated module name, folder included; `init` is the
+    module's __init__.py, with {manifest} where the manifest assignment goes; and
+    `unreadable` lists paths in the module no one may read."""
 
-    def __init__(self, slots_value=ABSENT, files=None, links=None, name=None, **fields):
+    def __init__(self, slots_value=ABSENT, files=None, links=None, name=None, init=None,
+                 unreadable=(), **fields):
         self.slots_value, self.files, self.fields = slots_value, files or {}, fields
-        self.links, self.name = links or {}, name
+        self.links, self.name, self.init, self.unreadable = links or {}, name, init, unreadable
 
     def __repr__(self):
-        return (f"Case(slots={self.slots_value!r}, files={sorted(self.files)}, "
-                f"links={sorted(self.links)}, name={self.name!r}, {self.fields!r})")
+        return (f"Case(slots={self.slots_value!r}, files={self.files!r}, "
+                f"links={sorted(self.links)}, name={self.name!r}, init={self.init!r}, "
+                f"unreadable={self.unreadable!r}, {self.fields!r})")
 
 
 def _fill(value, pkg: str):
@@ -175,7 +179,13 @@ class TestCoreParity(unittest.TestCase):
         manifest.update(_fill(case.fields, pkg))
         if case.slots_value is not ABSENT:
             manifest["slots"] = _fill(case.slots_value, pkg)
-        (folder / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n", encoding="utf-8")
+        (folder / "__init__.py").write_text(
+            _fill(case.init or "{manifest}", pkg).replace(
+                "{manifest}", f"PLUGIN_MANIFEST = {manifest!r}\n"), encoding="utf-8")
+        for rel in case.unreadable:
+            path = place(rel)
+            path.chmod(0)
+            self.addCleanup(lambda p=path: p.exists() and p.chmod(0o700))
         return folder, pkg
 
     def _core_refuses(self, folder: pathlib.Path, pkg: str) -> bool:
@@ -519,7 +529,8 @@ class TestCoreParity(unittest.TestCase):
                            "{pkg}.none", "{pkg}.foreign", "{pkg}.klass", "{pkg}.broken",
                            "{pkg}.via", "{pkg}.nope", "{pkg}.linked", "json",
                            "ui.routes.reports", "celerp.main", "{pkg}..api"):
-                cases.append(Case(files=files, links=links, **{key: module}))
+                cases.append(Case(files=files, links=links if module == "{pkg}.linked" else {},
+                                  **{key: module}))
             protected = {"{pkg}/protected.py": "import celerp.ai.service\n" + files["{pkg}/impl.py"]}
             cases.append(Case(files={**files, **protected}, **{key: "{pkg}.protected"}))
         self.assertParity(cases)
@@ -547,11 +558,111 @@ class TestCoreParity(unittest.TestCase):
                               table_prefix="acme_", migrations=package))
         self.assertParity(cases)
 
+    def test_manifest_declaration(self):
+        """PLUGIN_MANIFEST is bound once, as one top-level literal, and never changed,
+        read or replaced by a later star import anywhere in __init__.py."""
+        inits = ("{manifest}", "from os.path import *\n{manifest}",
+                 "{manifest}import os\nVERSION = '0.1.0'\n",
+                 "{manifest}def f():\n    manifest = {}\n    return manifest\n",
+                 "{manifest}{manifest}", "OTHER = {manifest}",
+                 "{manifest}PLUGIN_MANIFEST['version'] = '0.2.0'\n",
+                 "{manifest}PLUGIN_MANIFEST |= {}\n",
+                 "{manifest}def f():\n    global PLUGIN_MANIFEST\n    PLUGIN_MANIFEST = {}\n",
+                 "{manifest}NAME = PLUGIN_MANIFEST['name']\n", "{manifest}del PLUGIN_MANIFEST\n",
+                 "if True:\n    {manifest}", "{manifest}from os.path import *\n",
+                 "{manifest}globals()['PLUGIN_MANIFEST'] = {}\n")
+        self.assertParity(Case({"nav": [_base("nav")]}, init=init) for init in inits)
+
+    def test_dynamic_writes(self):
+        """The code Celerp runs for a module (its __init__.py, route and callable
+        modules, migrations, and the module's own files they import) must not write
+        names its source does not show; a file nothing imports is never run."""
+        writes = ("globals()['{fn}'] = {fn}\n", "vars()['{fn}'] = {fn}\n",
+                  "import sys\nsetattr(sys.modules[__name__], '{fn}', {fn})\n",
+                  "exec('def {fn}(*a, **k):\\n    return None')\n", "eval('1')\n",
+                  "{fn}.__code__ = (lambda *a, **k: None).__code__\n",
+                  "import sys\nsys.modules[__name__].__dict__['{fn}'] = {fn}\n",
+                  "import sys\nname = '{fn}'[:]\nsetattr(sys.modules[__name__], name, {fn})\n",
+                  "from {pkg} import PLUGIN_MANIFEST\n",
+                  "x = getattr(Klass, 'mro')\n", "setattr(Klass, 'flag', 1)\n",
+                  "def f():\n    return locals()\n", "")
+        cases = []
+        for slot in sorted(lint.CALLABLE_SLOTS):
+            key, awaited = lint.CALLABLE_SLOTS[slot]
+            fn = "async_fn" if awaited else "sync_fn"
+            entry = {**_base(slot), key: f"{{pkg}}.hooks:{fn}"}
+            cases += [_slot_case(slot, entry, {"{pkg}/hooks.py": HOOKS + w.replace("{fn}", fn)})
+                      for w in writes]
+            for files in ({"{pkg}/hooks.py": "from . import helper\n" + HOOKS,
+                           "{pkg}/helper.py": "globals()['x'] = 1\n"},
+                          {"{pkg}/__init__.py": "globals()['x'] = 1\n"},
+                          {"{pkg}/scratch.py": "globals()['x'] = 1\n"}):
+                cases.append(_slot_case(slot, entry, files))
+        routes = "def setup_ui_routes(app):\n    pass\n\n\n"
+        for extra in ("globals()['setup_ui_routes'] = setup_ui_routes\n",
+                      "setup_ui_routes.__defaults__ = ()\n", ""):
+            cases.append(Case(files={**ROUTES, "{pkg}/ui_routes.py": routes + extra},
+                              ui_routes="{pkg}.ui_routes"))
+        migration = "def upgrade():\n    pass\n"
+        for extra in ("exec('x = 1')\n", ""):
+            cases.append(Case(files={**ROUTES, "{pkg}/migrations/__init__.py": "",
+                                     "{pkg}/migrations/m001.py": migration + extra},
+                              ui_routes="{pkg}.ui_routes", table_prefix="acme_",
+                              migrations="{pkg}.migrations"))
+        cases += [Case({"nav": [_base("nav")]}, init="{manifest}" + extra)
+                  for extra in ("vars()['x'] = 1\n", "x = 1\n")]
+        self.assertParity(cases)
+
+    def test_module_tree(self):
+        """Celerp reads every file in the module, links never followed: a link to a
+        file or folder anywhere in it, or a file it cannot read, refuses the module,
+        except under the names it never reads."""
+        nav = {"nav": [_base("nav")]}
+        cases = [Case(nav, {"{pkg}/notes.txt": "x"}),
+                 Case(nav, links={"{pkg}/notes.py": "x = 1\n"}),
+                 Case(nav, links={"notes.py": "x = 1\n"}),
+                 Case(nav, links={"{pkg}/assets": {"a.txt": "x"}}),
+                 Case(nav, links={"docs": {"a.txt": "x"}}),
+                 Case(nav, links={"{pkg}/__pycache__": {"a.pyc": "x"}}),
+                 Case(nav, links={"{pkg}/old.pyc": "x"}),
+                 Case(nav, links={".github": {"a.yml": "x"}})]
+        if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+            cases += [Case(nav, {"{pkg}/notes.txt": "x"}, unreadable=["{pkg}/notes.txt"]),
+                      Case(nav, {"{pkg}/__pycache__/x.pyc": "x"},
+                           unreadable=["{pkg}/__pycache__/x.pyc"])]
+        self.assertParity(cases)
+
+    def test_imported_files_parse(self):
+        """Every file of the module's own that the code Celerp runs imports, directly
+        or not, must parse; a file nothing imports is never run."""
+        cases = []
+        for slot in sorted(lint.CALLABLE_SLOTS):
+            key, awaited = lint.CALLABLE_SLOTS[slot]
+            entry = {**_base(slot), key: f"{{pkg}}.hooks:{'async_fn' if awaited else 'sync_fn'}"}
+            for files in ({"{pkg}/hooks.py": "from . import helper\n" + HOOKS,
+                           "{pkg}/helper.py": "def x(:\n"},
+                          {"{pkg}/hooks.py": "from . import helper\n" + HOOKS,
+                           "{pkg}/helper.py": "from .more import y\n", "{pkg}/more.py": "y = (\n"},
+                          {"{pkg}/hooks.py": "from .sub.deep import x\n" + HOOKS,
+                           "{pkg}/sub/__init__.py": "def x(:\n", "{pkg}/sub/deep.py": "x = 1\n"},
+                          {"{pkg}/hooks.py": "import {pkg}.helper\n" + HOOKS,
+                           "{pkg}/helper.py": "def x(:\n"},
+                          {"{pkg}/hooks.py": "from . import helper\n" + HOOKS,
+                           "{pkg}/helper.py": "x = 1\n", "{pkg}/scratch.py": "def x(:\n"},
+                          {"{pkg}/hooks.py": "from .sub.deep import x\n" + HOOKS,
+                           "{pkg}/sub/__init__.py": "", "{pkg}/sub/deep.py": "x = 1\n"}):
+                cases.append(_slot_case(slot, entry, files))
+        routes = "from . import helper\n\n\ndef setup_ui_routes(app):\n    pass\n"
+        for helper in ("x = (\n", "x = 1\n"):
+            cases.append(Case(files={**ROUTES, "{pkg}/ui_routes.py": routes, "{pkg}/helper.py": helper},
+                              ui_routes="{pkg}.ui_routes"))
+        self.assertParity(cases)
+
     def test_where_lint_is_stricter(self):
         """What lint.py refuses although Celerp may load it. Callables only running the
         code could follow (a decorated function, a name a star import brings in, a
-        value built by a call) and a protected import in a file nothing imports. lint.py
-        refuses every one; Celerp loads some."""
+        value built by a call), a protected import in a file nothing imports, and a
+        folder no one may read. lint.py refuses every one; Celerp loads some."""
         wrap = ("import functools\n\n\ndef wrap(f):\n    @functools.wraps(f)\n"
                 "    def inner(*a, **k):\n        return f(*a, **k)\n    return inner\n\n\n")
         cases = []
@@ -566,6 +677,10 @@ class TestCoreParity(unittest.TestCase):
                                         {f"{{pkg}}/{module}.py": text}))
             cases.append(_slot_case(slot, _base(slot),
                                     {"{pkg}/unused.py": "import celerp.gateway\n"}))
+        # A folder no one may read: Celerp reads past it, lint.py cannot check it.
+        if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+            cases.append(Case({"nav": [_base("nav")]}, {"{pkg}/private/a.txt": "x"},
+                              unreadable=["{pkg}/private"]))
         loaded = 0
         for case in cases:
             folder, pkg = self._write(case, flat=False)
@@ -656,7 +771,84 @@ class TestCoreParity(unittest.TestCase):
                             *node.args, **{k.arg: k.value for k in node.keywords})
         self.assertGreater(calls, 0, "the example calls none of the helpers")
 
+    def test_source_rules_match(self):
+        """lint.py's copies of the rules Celerp reads module source by give Celerp's
+        answer on the same parsed source."""
+        texts = [
+            "PLUGIN_MANIFEST = {}\n", "PLUGIN_MANIFEST = {}\nPLUGIN_MANIFEST = {}\n",
+            "A = PLUGIN_MANIFEST = {}\n", "PLUGIN_MANIFEST: dict = {}\n",
+            "PLUGIN_MANIFEST = {}\nfrom x import *\n", "from x import *\nPLUGIN_MANIFEST = {}\n",
+            "PLUGIN_MANIFEST = {}\nprint(PLUGIN_MANIFEST)\n", "if x:\n    PLUGIN_MANIFEST = {}\n",
+            "def handler():\n    pass\n", "def handler():\n    pass\nhandler = 1\n",
+            "async def handler():\n    pass\nfrom x import *\n", "handler = lambda: None\n",
+            "from .a import handler\n", "import a.handler\n", "x = [handler := 1]\n",
+            "try:\n    pass\nexcept E as handler:\n    pass\n",
+            "match x:\n    case {**handler}:\n        pass\n",
+            "def f():\n    global handler\n    handler = 1\n",
+            "globals()['handler'] = 1\n", "vars()\n", "exec('x')\n", "eval('x')\n",
+            "__builtins__\n", "def f():\n    return locals()\n", "locals()\n",
+            "def f(a=locals()):\n    pass\n", "class K:\n    x = locals()\n",
+            "def f():\n    g = locals\n", "import sys\nsetattr(sys.modules[__name__], 'handler', 1)\n",
+            "setattr(obj, 'handler', 1)\n", "setattr(obj, 'flag', 1)\n", "setattr(obj, name, 1)\n",
+            "import os\nsetattr(os, name, 1)\n", "m = __import__('x')\nsetattr(m, name, 1)\n",
+            "getattr(obj, 'mro')\n", "getattr(obj, '__globals__')\n", "g = getattr\n",
+            "setattr(*args)\n", "setattr(obj, name=1)\n", "from operator import attrgetter\n",
+            "import operator\noperator.attrgetter('a.handler')\n",
+            "import operator\noperator.attrgetter(name)\n", "import operator\nf = operator.methodcaller\n",
+            "from operator import attrgetter as ag\n", "from builtins import setattr\n",
+            "from x import PLUGIN_MANIFEST\n", "import x\nx.PLUGIN_MANIFEST\n",
+            "handler.__code__ = None\n", "del handler.__defaults__\n", "obj.handler = 1\n",
+            "obj.other = 1\n", "import sys\nsys.modules['x'] = 1\n",
+            "import sys\nsys.modules.update({})\n", "f.__dict__\n", "import gc\ngc.get_referrers(x)\n",
+            "x = obj.__setattr__\n", "import sys\nsys._getframe().f_globals\n", "x = 1\n", "",
+        ]
+        for text in texts:
+            tree = ast.parse(text)
+            with self.subTest(text=text):
+                try:
+                    expected = importer._manifest_node(tree)
+                except importer.ModuleImportError:
+                    expected = "ambiguous"
+                node, error = lint._manifest_node(tree)
+                self.assertEqual("ambiguous" if error else node, expected)
+                for name in ("handler", "PLUGIN_MANIFEST", "x"):
+                    self.assertIs(lint._top_level_binding(tree, name),
+                                  loader._top_level_binding(tree, name))
+                for handlers in ({"PLUGIN_MANIFEST"}, {"PLUGIN_MANIFEST", "handler"}):
+                    self.assertEqual(lint._dynamic_write(tree, handlers),
+                                     loader._dynamic_write(tree, handlers))
+                for node in ast.walk(tree):
+                    self.assertEqual(lint._bound_names(node), importer._bound_names(node))
+
+    def test_source_resolution_matches(self):
+        """Which of the module's own files an import names, and which files the code
+        Celerp runs reaches, as Celerp resolves them."""
+        root = pathlib.Path(self.tmp.name) / "resolve" / "acme-r"
+        files = {"__init__.py": "", "acme_r/__init__.py": "from . import a\n",
+                 "acme_r/a.py": "from .sub import b\nimport acme_r.c\nfrom .. import outside\n",
+                 "acme_r/sub/__init__.py": "", "acme_r/sub/b.py": "from ..d import *\n",
+                 "acme_r/c.py": "import json\nfrom acme_r import e\n", "acme_r/d.py": "",
+                 "acme_r/e.py": "", "acme_r/lonely.py": "import acme_r.a\n"}
+        for rel, text in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text, encoding="utf-8")
+        for rel in files:
+            current = root / rel
+            for node in ast.walk(ast.parse(current.read_text(encoding="utf-8"))):
+                self.assertEqual(lint._local_imports(root, current, node),
+                                 loader._local_imports(root, current, node))
+        for entries in ([root / "__init__.py"], [root / "acme_r/a.py"], [root / "acme_r/sub/b.py"]):
+            trees, problems = lint._reachable_sources(root, entries)
+            self.assertEqual(problems, [])
+            self.assertEqual(set(trees), set(loader._reachable_sources(root, entries)))
+
     def test_shared_constants_match(self):
+        self.assertEqual(lint.TREE_EXCLUDE_GLOBS, loader._DIGEST_EXCLUDE_GLOBS)
+        self.assertEqual(lint.NAMESPACE_WRITERS, loader._NAMESPACE_WRITERS)
+        self.assertEqual(lint.MAPPING_WRITERS, loader._MAPPING_WRITERS)
+        self.assertEqual(lint.NAMESPACE_WRITER_ATTRS, loader._NAMESPACE_WRITER_ATTRS)
+        self.assertEqual(lint.ATTR_BY_NAME, loader._ATTR_BY_NAME)
+        self.assertEqual(lint.FUNCTION_INTERNALS, loader._FUNCTION_INTERNALS)
         self.assertEqual(lint.PERMISSION_KEYS, set(permissions._PERMISSIONS_BY_KEY))
         self.assertEqual(lint.PERMISSION_ENTRY_KEYS, loader._PERMISSION_ENTRY_KEYS)
         self.assertEqual(lint.DESTINATION_KEYS, loader._DESTINATION_KEYS)

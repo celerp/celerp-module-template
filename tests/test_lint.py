@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import pathlib
 import re
 import shutil
@@ -1138,9 +1139,189 @@ class TestMigrationsPackage(unittest.TestCase):
             f / "thing" / "migrations" / "m002.py").symlink_to(outside / "evil.py"))
         self.assertTrue(any("'m002.py'" in p and "outside the module" in p for p in problems),
                         problems)
-        # Celerp skips files starting with _, so a link there runs nothing.
-        self.assertEqual(self._check("thing.migrations", lambda f: (
-            f / "thing" / "migrations" / "_helper.py").symlink_to(outside / "evil.py")), [])
+        # Celerp skips files starting with _ when it runs migrations, but a link there
+        # is still a link in the module (TestModuleTree).
+        problems = self._check("thing.migrations", lambda f: (
+            f / "thing" / "migrations" / "_helper.py").symlink_to(outside / "evil.py"))
+        self.assertTrue(any("_helper.py" in p and "link" in p for p in problems), problems)
+
+
+
+class TestModuleTree(unittest.TestCase):
+    """Celerp reads every file of a module before it runs any of it, links never
+    followed, so a link anywhere in the module or a file it cannot read refuses
+    the module. The names it never reads (__pycache__, *.pyc and the like) are
+    the exception."""
+
+    def _outside(self) -> pathlib.Path:
+        outside = pathlib.Path(tempfile.mkdtemp())
+        _TEMP_DIRS.append(outside)
+        (outside / "notes.py").write_text("x = 1\n", encoding="utf-8")
+        return outside
+
+    def test_a_plain_tree_is_clean(self):
+        folder = _module("acme-thing")
+        (folder / "thing" / "assets").mkdir()
+        (folder / "thing" / "assets" / "logo.txt").write_text("x", encoding="utf-8")
+        self.assertEqual(lint.check(folder)[0], [])
+
+    def test_a_link_to_a_file_is_refused(self):
+        for target in ("notes.py", "missing.py"):
+            with self.subTest(target=target):
+                folder = _module("acme-thing")
+                (folder / "thing" / "notes.py").symlink_to(self._outside() / target)
+                problems = lint.check(folder)[0]
+                self.assertTrue(any("notes.py" in p and "link" in p for p in problems), problems)
+
+    def test_a_link_to_a_folder_is_refused(self):
+        for rel in ("thing/assets", "docs"):
+            with self.subTest(rel=rel):
+                folder = _module("acme-thing")
+                (folder / rel).symlink_to(self._outside(), target_is_directory=True)
+                problems = lint.check(folder)[0]
+                self.assertTrue(any(rel in p and "link" in p for p in problems), problems)
+
+    def test_names_celerp_never_reads_may_be_links(self):
+        folder = _module("acme-thing")
+        (folder / "thing" / "__pycache__").symlink_to(self._outside(), target_is_directory=True)
+        (folder / "thing" / "old.pyc").symlink_to(self._outside() / "notes.py")
+        self.assertEqual(lint.check(folder)[0], [])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads every file")
+    def test_an_unreadable_file_or_folder_is_refused(self):
+        for rel, make in (("thing/notes.txt", lambda p: p.write_text("x", encoding="utf-8")),
+                          ("thing/private", lambda p: p.mkdir())):
+            with self.subTest(rel=rel):
+                folder = _module("acme-thing")
+                path = folder / rel
+                make(path)
+                path.chmod(0)
+                self.addCleanup(path.chmod, 0o700)
+                problems = lint.check(folder)[0]
+                self.assertTrue(any(rel in p and "read" in p for p in problems), problems)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads every file")
+    def test_an_unreadable_file_celerp_never_reads_is_clean(self):
+        folder = _module("acme-thing")
+        (folder / "thing" / "__pycache__").mkdir()
+        stale = folder / "thing" / "__pycache__" / "x.pyc"
+        stale.write_bytes(b"x")
+        stale.chmod(0)
+        self.addCleanup(stale.chmod, 0o600)
+        self.assertEqual(lint.check(folder)[0], [])
+
+
+class TestManifestDeclaration(unittest.TestCase):
+    """PLUGIN_MANIFEST is bound once, as one top-level literal, and never changed,
+    read or replaced anywhere else in __init__.py: Python runs the whole file, so
+    only then is the literal what the module declares (importer._manifest_node)."""
+
+    @staticmethod
+    def _init(template: str) -> list[str]:
+        manifest = MANIFEST % ("acme-thing", "")
+        return lint.check(_module("acme-thing", body=template.replace("{manifest}", manifest)))[0]
+
+    def test_one_literal(self):
+        for template in ("{manifest}", "from os.path import *\n{manifest}",
+                         "{manifest}import os\nVERSION = '0.1.0'\n",
+                         "{manifest}def f():\n    manifest = {}\n    return manifest\n"):
+            with self.subTest(template=template):
+                self.assertEqual(self._init(template), [])
+
+    def test_bound_changed_or_read_elsewhere(self):
+        for template in ("{manifest}{manifest}", "OTHER = {manifest}",
+                         "{manifest}PLUGIN_MANIFEST['version'] = '0.2.0'\n",
+                         "{manifest}PLUGIN_MANIFEST |= {}\n",
+                         "{manifest}def f():\n    global PLUGIN_MANIFEST\n    PLUGIN_MANIFEST = {}\n",
+                         "{manifest}NAME = PLUGIN_MANIFEST['name']\n",
+                         "{manifest}del PLUGIN_MANIFEST\n",
+                         "if True:\n    {manifest}",
+                         "{manifest}from os.path import *\n"):
+            with self.subTest(template=template):
+                problems = self._init(template)
+                self.assertTrue(any("PLUGIN_MANIFEST must be bound once" in p for p in problems),
+                                problems)
+
+
+class TestReachableSources(unittest.TestCase):
+    """Every file Celerp runs for the module, and every file of the module's own
+    those files import, transitively, must read and parse before any of it runs."""
+
+    def test_an_imported_file_that_does_not_parse(self):
+        for files in ({"thing/hooks.py": "from . import helper\n" + HOOKS,
+                       "thing/helper.py": "def x(:\n"},
+                      {"thing/hooks.py": "from .sub.deep import x\n" + HOOKS,
+                       "thing/sub/__init__.py": "def x(:\n", "thing/sub/deep.py": "x = 1\n"},
+                      {"thing/hooks.py": "import thing.helper\n" + HOOKS,
+                       "thing/helper.py": "from .more import y\n", "thing/more.py": "y = (\n"}):
+            with self.subTest(files=sorted(files)):
+                problems = _problems({"doc_detail_actions": [{"render": "thing.hooks:sync_fn"}]},
+                                     files)
+                self.assertTrue(any("does not parse" in p for p in problems), problems)
+
+    def test_a_route_or_migration_import_that_does_not_parse(self):
+        folder = _module("acme-thing", extra='"table_prefix": "acme_", "migrations": "thing.migrations",')
+        (folder / "thing" / "migrations").mkdir()
+        (folder / "thing" / "migrations" / "m001.py").write_text(
+            "from ..helper import x\n", encoding="utf-8")
+        (folder / "thing" / "helper.py").write_text("x = (\n", encoding="utf-8")
+        problems = lint.check(folder)[0]
+        self.assertTrue(any("helper.py" in p and "does not parse" in p for p in problems), problems)
+        folder = _module("acme-thing")
+        (folder / "thing" / "ui_routes.py").write_text(
+            "from . import helper\n\n\ndef setup_ui_routes(app):\n    pass\n", encoding="utf-8")
+        (folder / "thing" / "helper.py").write_bytes(b"x = '\xff'\n")
+        problems = lint.check(folder)[0]
+        self.assertTrue(any("helper.py" in p for p in problems), problems)
+
+    def test_a_file_nothing_imports_may_not_parse(self):
+        # Celerp never runs it; the import check alone keeps an eye on it.
+        files = {"thing/hooks.py": "from . import helper\n" + HOOKS, "thing/helper.py": "x = 1\n",
+                 "thing/scratch.py": "def x(:\n"}
+        self.assertEqual(_problems({"doc_detail_actions": [{"render": "thing.hooks:sync_fn"}]},
+                                   files), [])
+
+
+class TestDynamicWrites(unittest.TestCase):
+    """The code Celerp runs for a module must not write names its source does not
+    show: through globals(), vars(), a module's __dict__, setattr, exec or eval,
+    or by changing a function's code (loader._dynamic_write)."""
+
+    SLOTS = {"doc_detail_actions": [{"render": "thing.hooks:sync_fn"}]}
+    WRITES = ("globals()['sync_fn'] = sync_fn\n", "vars()['sync_fn'] = sync_fn\n",
+              "import sys\nsetattr(sys.modules[__name__], 'sync_fn', sync_fn)\n",
+              "exec('def sync_fn(*a):\\n    return None')\n",
+              "eval('1')\n",
+              "sync_fn.__code__ = (lambda *a: None).__code__\n",
+              "import sys\nsys.modules[__name__].__dict__['sync_fn'] = sync_fn\n",
+              "import sys\nname = 'sync' + '_fn'\nsetattr(sys.modules[__name__], name, sync_fn)\n",
+              "from thing import PLUGIN_MANIFEST\n")
+    FINE = ("x = getattr(Klass, 'mro')\n", "setattr(Klass, 'flag', 1)\n",
+            "def f():\n    return locals()\n", "")
+
+    def test_in_the_callable_module(self):
+        for text in self.WRITES:
+            with self.subTest(text=text):
+                problems = _problems(self.SLOTS, {"thing/hooks.py": HOOKS + text})
+                self.assertTrue(any("writes names dynamically" in p for p in problems), problems)
+        for text in self.FINE:
+            with self.subTest(text=text):
+                self.assertEqual(_problems(self.SLOTS, {"thing/hooks.py": HOOKS + text}), [])
+
+    def test_anywhere_celerp_runs(self):
+        write = "globals()['x'] = 1\n"
+        for files in ({"thing/hooks.py": "from . import helper\n" + HOOKS, "thing/helper.py": write},
+                      {"thing/__init__.py": write},
+                      {"thing/ui_routes.py": "def setup_ui_routes(app):\n    pass\n" + write}):
+            with self.subTest(files=sorted(files)):
+                problems = _problems(self.SLOTS, files)
+                self.assertTrue(any("writes names dynamically" in p for p in problems), problems)
+        manifest = MANIFEST % ("acme-thing", "")
+        problems = lint.check(_module("acme-thing", body=manifest + write))[0]
+        self.assertTrue(any("writes names dynamically" in p for p in problems), problems)
+
+    def test_not_in_a_file_nothing_imports(self):
+        self.assertEqual(_problems(self.SLOTS, {"thing/scratch.py": "globals()['x'] = 1\n"}), [])
 
 
 class TestFindingKinds(unittest.TestCase):
