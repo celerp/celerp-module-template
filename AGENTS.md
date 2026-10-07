@@ -22,8 +22,10 @@ at <https://www.celerp.com/docs/modules.html>; this section is the order of work
 Claude in a browser), you cannot run commands, so the steps below change in these
 ways:
 
-- Do the work on GitHub through the connector: create the person's repository from
-  this template, write every file in full, and commit to its default branch.
+- A connector cannot create a repository, so the person creates theirs from this
+  template on GitHub and gives you its address. Work in that repository through the
+  connector: write every file in full, and commit to its default branch. Never
+  create another repository.
 - GitHub runs lint and the tests on every commit. Read the result through the
   connector; if a check failed, read its log, fix the cause, and commit again. Never
   say a check passed unless you read the green result, and never skip a failure.
@@ -103,10 +105,9 @@ ways:
    set the existing entry's `commit` to the new full commit id, and open a new pull
    request from the same account. Celerp only offers the listed commit, so every
    version is a new `commit` in the entry.
-9. **If you cannot do a step** (the connector cannot create the repository, commit,
-   read the checks, fork, or open the pull request), do not stop at "done" and do
-   not hand over files. Tell the person which step you could not do and why, and
-   stop there.
+9. **If you cannot do a step** (the connector cannot commit, read the checks, fork,
+   or open the pull request), do not stop at "done" and do not hand over files.
+   Tell the person which step you could not do and why, and stop there.
 
 ## The eight rules
 
