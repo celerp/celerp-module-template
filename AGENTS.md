@@ -29,8 +29,13 @@ ways:
 - GitHub runs lint and the tests on every commit. Read the result through the
   connector; if a check failed, read its log, fix the cause, and commit again. Never
   say a check passed unless you read the green result, and never skip a failure.
-- Submit through the connector too: fork `celerp/community-modules`, change
-  `index.json` only, and open the pull request (step 6).
+- A connector cannot fork either, so the person forks `celerp/community-modules`
+  on GitHub and gives you the fork's address. Through the connector, create a
+  branch in the fork from its `main`, change `index.json` only, and open the pull
+  request into `celerp/community-modules` (step 6). If the connector cannot open a
+  pull request across forks, give the person
+  `https://github.com/celerp/community-modules/compare/main...<owner>:<fork>:<branch>?expand=1`
+  with the names filled in; they open it and click **Create pull request**.
 - Never hand over a zip or ask the person to upload files. If the connector cannot
   do a step, follow step 9.
 
@@ -82,7 +87,8 @@ ways:
      (terminal: `git rev-parse HEAD` after the push, and check it matches GitHub;
      chat: read it through the connector).
    - Fork `celerp/community-modules` into the person's account (terminal:
-     `gh repo fork celerp/community-modules --clone`) and branch from its `main`.
+     `gh repo fork celerp/community-modules --clone`; chat: the person forks it on
+     GitHub) and branch from its `main`.
    - Add one entry to `index.json` with `id`, `name`, `description`,
      `"tier": "community"`, `repo` (`https://github.com/<owner>/<repository>`),
      `commit`, `author`, `license`, `data_access` and `network_calls`, and no
@@ -101,12 +107,13 @@ ways:
    wait.
 8. **New versions.** Raise `version` in the manifest, commit to the default branch,
    and submit an update the same way: first bring the fork's `main` up to date
-   with `celerp/community-modules` `main` (GitHub's **Sync fork**), branch from it,
+   with `celerp/community-modules` `main` (GitHub's **Sync fork**; with a chat, the
+   person clicks it), branch from it,
    set the existing entry's `commit` to the new full commit id, and open a new pull
    request from the same account. Celerp only offers the listed commit, so every
    version is a new `commit` in the entry.
-9. **If you cannot do a step** (the connector cannot commit, read the checks, fork,
-   or open the pull request), do not stop at "done" and do not hand over files.
+9. **If you cannot do a step** (the connector cannot commit, read the checks, or
+   create the branch), do not stop at "done" and do not hand over files.
    Tell the person which step you could not do and why, and stop there.
 
 ## The eight rules
