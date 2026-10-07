@@ -43,7 +43,7 @@ at <https://www.celerp.com/docs/modules.html>; this section is the order of work
    pull request into the default branch of the person's own repository, ask them
    to press **Merge**, and continue from the merged commit.
 5. **Build the zip, if they want to try it first.** From the repository root,
-   `zip -r <id>.zip <id>/`. In Celerp, **Modules**, then **Local Modules**, then
+   `zip -r <id>.zip <id>/`. In Celerp, **Modules**, then **Installed Modules**, then
    **Import Module** takes that zip. GitHub's **Code**, then **Download ZIP** also
    works, since Celerp finds the one folder that holds `PLUGIN_MANIFEST`.
 6. **Submit it.** The submission is a pull request to `celerp/community-modules`
