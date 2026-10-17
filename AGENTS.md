@@ -132,7 +132,7 @@ compose `cell--{type}` at render time, so `cell--date` is core's even though no 
 file contains the string.
 
 **3. Use the shared components rather than a lookalike.** `page_header`
-(`ui/components/shell.py:2700`) puts search and actions in the header at the house
+(`ui/components/shell.py:2726`) puts search and actions in the header at the house
 size. `display_cell` (`ui/components/table.py:1181`) and `editable_cell`
 (`ui/components/table.py:960`) give you double-click-to-edit, ESC to cancel,
 save-on-blur, and `--` for an empty value, all pointed at your own routes through
@@ -147,7 +147,7 @@ the loader refuses a module whose slot entries name a key outside it, in either
 cannot invent one today. Pick the
 key that matches what the page does. The API router depends on `require_permission`
 (`acme-maintenance/acme_maintenance/routes.py:57`) and the sidebar hides an entry
-whose `permission` the role does not have (`ui/components/shell.py:2503`); the page
+whose `permission` the role does not have (`ui/components/shell.py:2529`); the page
 asks the same question so a viewer is never offered a control that would only fail.
 Hiding a control is presentation, never protection: the router is what stops a
 hand-made request.
@@ -364,8 +364,8 @@ Each `path:line` above, with the exact text of that line. Paths under `celerp/` 
 - `lint.py:696`: `def _ignored_parts(manifest: dict) -> list[str]:`
 - `lint.py:935`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
 - `ui/components/files.py:106`: `def files_section(`
-- `ui/components/shell.py:2503`: `def _allowed(item: dict) -> bool:`
-- `ui/components/shell.py:2700`: `def page_header(title: str, *actions: FT) -> FT:`
+- `ui/components/shell.py:2529`: `def _allowed(item: dict) -> bool:`
+- `ui/components/shell.py:2726`: `def page_header(title: str, *actions: FT) -> FT:`
 - `ui/components/table.py:1181`: `def display_cell(`
 - `ui/components/table.py:960`: `def editable_cell(`
 - `ui/routes/inventory.py:2638`: `edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()`
