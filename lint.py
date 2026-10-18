@@ -34,15 +34,20 @@ see other installed modules:
     or write_permission names a key from Celerp's permission registry; a
     requires_connector is a connector id or None; a bulk_action names an
     action_type the toolbar knows; category_schema fields are field definitions;
-    nav href and settings_href and bulk_action form_action (required) are paths
-    inside Celerp; a callable slot names a function in the module's own files,
-    async exactly where Celerp awaits it; a projection_handler names its prefix,
-    and no two of its prefixes, or one of them and one of Celerp's own, overlap
+    nav href, settings_href and probe_href, and bulk_action form_action and
+    import_target href (both required) are paths inside Celerp; a callable slot
+    names a function in the module's own files, async exactly where Celerp awaits
+    it, taking exactly the keyword arguments Celerp passes where the slot names
+    them; label_source keys list field names as text; a projection_handler names
+    its prefix, and no two of its prefixes, or one of them and one of Celerp's
+    own, overlap
+  - no slot Celerp keeps for its own modules (FIRST_PARTY_SLOTS) is filled
   - search_provider is one descriptor with exactly handler, result_key and permission
   - pricing_action entries have the shape the loader accepts: known keys only,
     a link that stays inside Celerp, and braces only around a placeholder
   - item_action links stay inside Celerp, with braces only around {entity_id}
-  - every top-level manifest field holds the one type Celerp reads it as
+  - every top-level manifest field holds the one type Celerp reads it as, and
+    readable_when_off, which only Celerp's own modules may set, is left out
   - table_prefix has the shape Celerp requires, claims no table Celerp reserves,
     and a module with migrations sets one
   - every table the module's code or migrations name starts with its table_prefix
@@ -78,7 +83,7 @@ from pathlib import Path
 
 # Kept in sync with celerp/modules/loader.py _PROTECTED_BSL_INTERNALS.
 PROTECTED = {"celerp.session_gate", "celerp.ai", "celerp.gateway", "celerp.connectors",
-             "celerp.credentials"}
+             "celerp.credentials", "celerp.services.auto_je", "celerp.services.module_journals"}
 REQUIRED_FIELDS = ("name", "version", "display_name", "license")
 # The longest module name Celerp accepts (celerp/modules/importer.py _NAME_MAX).
 NAME_MAX = 64
@@ -86,8 +91,8 @@ NAME_MAX = 64
 # it as (celerp/modules/loader.py, importer.py, migrations_runner.py). Lint refuses
 # any other type; Celerp refuses some (a slots list, a depends_on string) and
 # breaks on others (a migrations number has no .split()). None is the same as
-# leaving the field out, which is how Celerp reads it, except for table_prefix:
-# Celerp checks a declared table_prefix whatever its value.
+# leaving the field out, which is how Celerp reads it, except for table_prefix and
+# readable_when_off: Celerp checks a declared one whatever its value.
 # depends_on is a list of strings.
 MANIFEST_FIELD_TYPES = {
     **dict.fromkeys(("name", "version", "display_name", "label", "description", "license",
@@ -95,12 +100,15 @@ MANIFEST_FIELD_TYPES = {
                      "table_prefix"), str),
     **dict.fromkeys(("slots", "company_backup", "locales"), dict),
     "depends_on": list,
+    "readable_when_off": bool,
 }
+# Fields Celerp checks whenever they are declared, None included.
+CHECKED_WHEN_NONE = {"table_prefix", "readable_when_off"}
 # An unknown key is not an error to the loader, it is simply ignored, which is why
 # it has to be an error here: a module whose gating key is misspelled ships wide
 # open and nothing says a word.
 MANIFEST_KEYS = set(MANIFEST_FIELD_TYPES)
-TYPE_NAMES = {str: "a string", dict: "a dict", list: "a list of strings"}
+TYPE_NAMES = {str: "a string", dict: "a dict", list: "a list of strings", bool: "true or false"}
 # Every slot core consumes (celerp/modules/slots.py). The loader refuses a module
 # that fills any other name, so a misspelled slot is a load failure.
 SLOT_NAMES = {
@@ -108,10 +116,13 @@ SLOT_NAMES = {
     "doc_detail_badges", "category_schema", "on_company_created", "on_modules_ready",
     "send_to_targets", "catalog_channel", "projection_handler", "pricing_action",
     "doc_finalize_hook", "on_doc_payment", "inventory_in_production", "item_lineage_guard",
+    "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
+    "import_target", "turn_off_preflight",
 }
 # Slots whose answer the books are judged by: Celerp takes them from its own modules
 # only and refuses a module of anyone else's that fills one.
-FIRST_PARTY_SLOTS = {"inventory_in_production"}
+FIRST_PARTY_SLOTS = {"inventory_in_production", "demo_records", "background_loop",
+                     "doc_asset_lines", "turn_off_preflight"}
 # The slots a module built from this template may fill.
 PUBLIC_SLOTS = SLOT_NAMES - FIRST_PARTY_SLOTS
 # The event-type prefixes Celerp projects itself. An event type has one handler: the
@@ -122,7 +133,7 @@ COMPANY_BACKUP_VALUES = {"include", "exclude"}
 # The keys a nav slot entry may carry (ui/components/shell.py builds the sidebar).
 NAV_ITEM_KEYS = {
     "group", "key", "href", "label", "label_key", "order", "settings_href",
-    "permission",
+    "permission", "probe_href",
 }
 # The keys a search_provider slot descriptor may carry, and all three are
 # required: the loader calls "handler", returns rows under "result_key", and
@@ -179,14 +190,16 @@ PERMISSION_KEYS = {
     "record_payments", "revert_items_to_draft", "run_backups", "set_inventory_prices",
     "set_sales_doc_prices", "use_ai_assistant", "view_contacts", "view_dashboards",
     "view_documents", "view_financial_reports", "view_inventory", "view_inventory_costs",
-    "view_payments", "view_subscriptions",
+    "view_payments", "view_subscriptions", "view_fixed_assets", "manage_fixed_assets",
+    "check_fixed_assets",
 }
 # The rest mirror celerp/modules/loader.py in Celerp 2.5.4, name for name.
 PERMISSION_ENTRY_KEYS = ("permission", "write_permission")
 # Entry keys naming where a click goes, and whether the entry must carry the key.
 DESTINATION_KEYS = {
-    "nav": {"href": False, "settings_href": False},
+    "nav": {"href": False, "settings_href": False, "probe_href": False},
     "bulk_action": {"form_action": True},
+    "import_target": {"href": True},
 }
 # Slots whose entries name code Celerp imports and calls: the entry key holding the
 # "module.path:function", and whether Celerp awaits the call (so it must be async)
@@ -202,6 +215,13 @@ CALLABLE_SLOTS = {
     "projection_handler": ("handler", False),
     "inventory_in_production": ("handler", True),
     "item_lineage_guard": ("handler", True),
+    "demo_records": ("handler", True),
+    "background_loop": ("handler", True),
+    "doc_asset_lines": ("handler", True),
+    "fixed_asset_rules": ("handler", False),
+    "label_source": ("handler", True),
+    "import_target": ("handler", True),
+    "turn_off_preflight": ("handler", True),
 }
 # Callable slots Celerp calls with keyword arguments only, and those arguments. The
 # handler takes exactly these: no other parameter, none positional-only, and no
@@ -209,6 +229,12 @@ CALLABLE_SLOTS = {
 HANDLER_KEYWORDS = {
     "inventory_in_production": ("session", "company_id"),
     "item_lineage_guard": ("session", "entry", "transition"),
+    "demo_records": ("session", "company_id", "user_id"),
+    "background_loop": (),
+    "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
+    "label_source": ("session", "company_id", "ids"),
+    "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
+    "turn_off_preflight": ("session", "company_id"),
 }
 # Package names Celerp keeps for itself, and the prefix of its own modules' packages.
 RESERVED_IMPORT_NAMES = frozenset({"celerp", "ui", "default_modules", "premium_modules"})
@@ -246,9 +272,17 @@ SLOT_ENTRY_KEYS = {
     "on_doc_payment": {},
     "inventory_in_production": {},
     "item_lineage_guard": {},
+    "demo_records": {},
+    "background_loop": {},
+    "doc_asset_lines": {},
+    "fixed_asset_rules": {"kind": (_TEXT, True), "key": (_TEXT, True)},
+    "label_source": {"entity_type": (_TEXT, True), "label_key": (_TEXT, True), "keys": ((list,), True),
+                     "preset": ((dict,), True)},
+    "import_target": {"kind": (_TEXT, True)},
+    "turn_off_preflight": {},
 }
 ENTRY_TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
-                    list: "a list", type(None): "None"}
+                    list: "a list", dict: "a dict", type(None): "None"}
 
 
 # The names Celerp never reads when it checks a module's files, matched against each
@@ -814,6 +848,15 @@ def _takes_exactly(node: ast.FunctionDef | ast.AsyncFunctionDef, keywords: tuple
             and sorted(p.arg for p in a.args + a.kwonlyargs) == sorted(keywords))
 
 
+def _label_source_problems(where: str, item: dict, folder: Path) -> list[str]:
+    """The loader's _validate_label_source, for one entry: keys names the row's fields
+    as non-empty text, and the handler takes the slot's keywords."""
+    keys = item["keys"]
+    if not keys or any(not isinstance(k, str) or not k for k in keys):
+        return [f"{where} keys must list the row's field names as text, not {keys!r}"]
+    return _keyword_check("label_source")(where, item, folder)
+
+
 # Per-slot checks beyond the generic entry rules (the loader's _SLOT_VALIDATORS),
 # each called as check(slot, items, folder) with the (index, entry) pairs that pass
 # those rules.
@@ -824,6 +867,7 @@ SLOT_CHECKS = {
     "category_schema": _each(_category_schema_problems),
     "projection_handler": _projection_prefix_problems,
     **{slot: _each(_keyword_check(slot)) for slot in HANDLER_KEYWORDS},
+    "label_source": _each(_label_source_problems),
 }
 
 
@@ -1286,7 +1330,7 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
     problems.extend(wrong.values())
     manifest = {field: value for field, value in manifest.items()
                 if field not in wrong
-                and not (value is None and field in MANIFEST_KEYS - {"table_prefix"})}
+                and not (value is None and field in MANIFEST_KEYS - CHECKED_WHEN_NONE)}
 
     for field in REQUIRED_FIELDS:
         if field not in wrong and not manifest.get(field):
@@ -1314,6 +1358,9 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
     ignored = _ignored_parts(manifest)
     if not (manifest.get("slots") or manifest.get("api_routes") or manifest.get("ui_routes")):
         ignored.append("manifest declares no slots and no routes - the module does nothing")
+    if manifest.get("readable_when_off", False) is not False:
+        problems.append("readable_when_off: only Celerp's own modules stay readable while a "
+                        "company has them turned off - leave it out")
     problems.extend(_table_prefix_problems(manifest))
     problems.extend(_stray_table_problems(manifest, files))
     problems.extend(_import_name_problems(folder))

@@ -349,7 +349,7 @@ class TestManifestKeys(unittest.TestCase):
                             f"{key!r} does nothing at load time: {problems}")
 
 
-class TestSlotNames(unittest.TestCase):
+class TestUnknownSlots(unittest.TestCase):
     """Core ignores a slot it does not consume, so a misspelled slot name ships a
     module whose entry never appears, with nothing logged."""
 
@@ -716,6 +716,7 @@ class TestManifestFieldTypes(unittest.TestCase):
         **{field: _NOT_DICT for field in ("slots", "company_backup", "locales")},
         "depends_on": ("acme-base", 1, True, {"acme-base": 1}, ("acme-base",),
                        ["acme-base", 1], [None], [["acme-base"]]),
+        "readable_when_off": ("yes", 0, 1, [], {}),
     }
 
     def _problems(self, **fields) -> list[str]:
@@ -754,8 +755,9 @@ class TestManifestFieldTypes(unittest.TestCase):
             table_prefix="acme_", company_backup={}), [])
 
     def test_none_is_an_absent_optional_field(self):
-        # Celerp reads None the same as a missing key, except for table_prefix.
-        for field in sorted(lint.MANIFEST_KEYS - set(lint.REQUIRED_FIELDS) - {"table_prefix"}):
+        # Celerp reads None the same as a missing key, except for the fields it checks
+        # whenever they are declared.
+        for field in sorted(lint.MANIFEST_KEYS - set(lint.REQUIRED_FIELDS) - lint.CHECKED_WHEN_NONE):
             with self.subTest(field=field):
                 self.assertEqual(self._problems(**{field: None}), [])
 
@@ -798,7 +800,10 @@ HOOKS = (
     "VALUE = 5\n"
     "alias = async_fn\n"
     "async def lineage_guard(*, session, entry, transition):\n    return None\n\n\n"
-    "async def in_production(session, company_id):\n    return 0\n"
+    "async def in_production(session, company_id):\n    return 0\n\n\n"
+    "async def label_rows(*, session, company_id, ids):\n    return []\n\n\n"
+    "async def import_rows(*, session, company_id, user_id, rows, as_at, source, body):\n"
+    "    return {}\n"
 )
 
 
@@ -907,7 +912,8 @@ class TestCallableSlots(unittest.TestCase):
     def _one(self, slot: str, dotted, files: dict | None = None) -> list[str]:
         key, _ = lint.CALLABLE_SLOTS[slot]
         entry = {key: dotted, "result_key": "items", "permission": "view_inventory"} \
-            if slot == "search_provider" else {key: dotted, "prefix": "acme."}
+            if slot == "search_provider" else {key: dotted, "prefix": "acme.", "kind": "tax_regime",
+                                               "key": "acme_regime"}
         return _problems({slot: entry if slot == "search_provider" else [entry]}, files)
 
     def test_async_exactly_where_awaited(self):
@@ -976,6 +982,12 @@ class TestHandlerKeywords(unittest.TestCase):
         self.assertEqual(lint.HANDLER_KEYWORDS, {
             "inventory_in_production": ("session", "company_id"),
             "item_lineage_guard": ("session", "entry", "transition"),
+            "demo_records": ("session", "company_id", "user_id"),
+            "background_loop": (),
+            "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
+            "label_source": ("session", "company_id", "ids"),
+            "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
+            "turn_off_preflight": ("session", "company_id"),
         })
         for slot in lint.HANDLER_KEYWORDS:
             self.assertEqual(lint.CALLABLE_SLOTS[slot], ("handler", True))
@@ -1375,6 +1387,7 @@ class TestSlotNames(unittest.TestCase):
         self.assertEqual(lint.PUBLIC_SLOTS, lint.SLOT_NAMES - lint.FIRST_PARTY_SLOTS)
         self.assertIn("inventory_in_production", lint.FIRST_PARTY_SLOTS)
 
+
 # One correct entry for every slot Celerp reads.
 VALID_ENTRIES = {
     "nav": [{"key": "acme", "label": "Acme", "href": "/acme", "order": 40.5, "group": None}],
@@ -1399,6 +1412,14 @@ VALID_ENTRIES = {
     "on_doc_payment": [{"handler": "thing.hooks:async_fn"}],
     "item_lineage_guard": [{"handler": "thing.hooks:lineage_guard"}],
     "inventory_in_production": [{"handler": "thing.hooks:in_production"}],
+    "demo_records": [{"handler": "thing.hooks:async_fn"}],
+    "background_loop": [{"handler": "thing.hooks:async_fn"}],
+    "doc_asset_lines": [{"handler": "thing.hooks:async_fn"}],
+    "turn_off_preflight": [{"handler": "thing.hooks:async_fn"}],
+    "fixed_asset_rules": [{"kind": "tax_regime", "key": "acme_regime", "handler": "thing.hooks:Klass"}],
+    "label_source": [{"entity_type": "acme_thing", "label_key": "acme.thing", "keys": ["name"],
+                      "preset": {}, "permission": "view_fixed_assets", "handler": "thing.hooks:label_rows"}],
+    "import_target": [{"kind": "acme_register", "href": "/acme/import", "handler": "thing.hooks:import_rows"}],
 }
 
 # Literals of every type a manifest can hold.
@@ -1411,6 +1432,72 @@ def _with(slot: str, **changes) -> dict:
     if isinstance(entry, dict):
         return {slot: {**entry, **changes}}
     return {slot: [{**entry[0], **changes}]}
+
+
+class TestFixedAssetsContract(unittest.TestCase):
+    """A module may add fixed-asset rules, label sources and import targets, gate them
+    by the asset permissions, and show a nav entry only where its probe page answers;
+    the slots and the manifest flag Celerp keeps for its own modules are refused."""
+
+    PUBLIC = {slot: VALID_ENTRIES[slot] for slot in ("fixed_asset_rules", "label_source", "import_target")}
+
+    def test_a_module_using_the_public_contract_is_clean(self):
+        nav = [{"key": "acme", "label": "Acme", "href": "/acme", "probe_href": "/acme/probe",
+                "permission": "check_fixed_assets"}]
+        self.assertEqual(_problems({**self.PUBLIC, "nav": nav}), [])
+        for permission in ("view_fixed_assets", "manage_fixed_assets", "check_fixed_assets"):
+            with self.subTest(permission=permission):
+                self.assertEqual(_problems(_with("label_source", permission=permission)), [])
+
+    def test_first_party_slots_refused(self):
+        for slot in ("demo_records", "background_loop", "doc_asset_lines", "turn_off_preflight"):
+            with self.subTest(slot=slot):
+                self.assertEqual(_problems({**self.PUBLIC, slot: VALID_ENTRIES[slot]}),
+                                 [f"Slot {slot!r} is filled by Celerp's own modules only."])
+
+    def test_destinations_stay_inside_celerp(self):
+        for slot, key in (("nav", "probe_href"), ("import_target", "href")):
+            with self.subTest(slot=slot, key=key):
+                problems = _problems(_with(slot, **{key: "//evil.example"}))
+                self.assertTrue(any(f"{key} '//evil.example' must be a path inside Celerp" in p
+                                    for p in problems), problems)
+        entry = {k: v for k, v in VALID_ENTRIES["import_target"][0].items() if k != "href"}
+        self.assertEqual(_problems({"import_target": [entry]}), ["import_target entry 0 needs a href"])
+
+    def test_entry_rules(self):
+        for slot, key, value, reason in (
+                ("fixed_asset_rules", "kind", "", "kind must not be empty"),
+                ("fixed_asset_rules", "key", 3, "key must be text"),
+                ("label_source", "preset", [], "preset must be a dict"),
+                ("label_source", "keys", "name", "keys must be a list"),
+                ("label_source", "keys", [], "keys must list the row's field names"),
+                ("label_source", "keys", ["name", ""], "keys must list the row's field names"),
+                ("label_source", "keys", [1], "keys must list the row's field names"),
+                ("label_source", "permission", "view_assets", "not a Celerp permission key"),
+                ("label_source", "handler", "thing.hooks:import_rows", "session, company_id, ids"),
+                ("import_target", "handler", "thing.hooks:label_rows", "session, company_id, user_id, rows"),
+                ("import_target", "kind", None, "kind must be text")):
+            with self.subTest(slot=slot, key=key, value=value):
+                problems = _problems(_with(slot, **{key: value}))
+                self.assertTrue(any(reason in p for p in problems), problems)
+        # A fixed_asset_rules handler is called plainly, so it names a class or a plain function.
+        self.assertTrue(any("async" in p for p in _problems(_with("fixed_asset_rules", handler="thing.hooks:async_fn"))))
+        self.assertEqual(_problems(_with("fixed_asset_rules", handler="thing.hooks:sync_fn")), [])
+
+    def test_readable_when_off_is_celerps_own(self):
+        self.assertEqual(lint.check(_module("acme-thing", extra='"readable_when_off": False,'))[0], [])
+        for value in ("True", "None", '"yes"', "1"):
+            with self.subTest(value=value):
+                problems = lint.check(_module("acme-thing", extra=f'"readable_when_off": {value},'))[0]
+                self.assertTrue(problems and all("readable_when_off" in p for p in problems), problems)
+
+    def test_journal_internals_are_protected(self):
+        for name in ("celerp.services.auto_je", "celerp.services.module_journals"):
+            with self.subTest(name=name):
+                folder = _module("acme-thing")
+                (folder / "service.py").write_text(f"import {name}\n", encoding="utf-8")
+                problems = lint.lint(folder)
+                self.assertTrue(any(name in p for p in problems), problems)
 
 
 class TestEntryTypes(unittest.TestCase):

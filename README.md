@@ -250,9 +250,14 @@ A module may fill these slots: `nav`, `search_provider`, `bulk_action`,
 `item_action`, `pricing_action`, `doc_detail_actions`, `doc_detail_badges`,
 `category_schema`, `send_to_targets`, `catalog_channel`, `projection_handler`,
 `on_company_created`, `on_modules_ready`, `doc_finalize_hook`, `on_doc_payment`,
-`item_lineage_guard`. From Celerp 2.5.4 the loader refuses a module that fills any
-other slot name, and `inventory_in_production` is filled by Celerp's own modules
-only. It also refuses a module whose slot entries break any of these:
+`item_lineage_guard`, `fixed_asset_rules`, `label_source`, `import_target`. From
+Celerp 2.5.4 the loader refuses a module that fills any other slot name, and
+`inventory_in_production` is filled by Celerp's own modules only. The slots for
+fixed assets (`fixed_asset_rules`, `label_source`, `import_target`), the nav
+`probe_href` key and the `view_fixed_assets`, `manage_fixed_assets` and
+`check_fixed_assets` permissions need a Celerp release newer than 2.5.6, which also
+keeps `demo_records`, `background_loop`, `doc_asset_lines` and `turn_off_preflight`
+for its own modules. It also refuses a module whose slot entries break any of these:
 
 - Each entry is a dict, and carries what the code reading its slot takes from
   it, in the type it reads it as: `nav` `order` is a number and `key`, `label`

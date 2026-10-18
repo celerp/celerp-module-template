@@ -65,6 +65,9 @@ HOOKS = (
     "lam = lambda *args, **kwargs: None\n"
     "VALUE = 5\n"
     "async def item_lineage_guard(*, session, entry, transition):\n    return None\n\n\n"
+    "async def label_source(*, session, company_id, ids):\n    return []\n\n\n"
+    "async def import_target(*, session, company_id, user_id, rows, as_at, source, body):\n"
+    "    return {}\n\n\n"
 )
 # Handler signatures for the slots Celerp calls with keyword arguments only.
 SIGNATURES = (
@@ -120,6 +123,10 @@ def _base(slot: str) -> dict:
         "send_to_targets": {"label": "L", "doc_type": "quotation"},
         "catalog_channel": {"label": "L", "id": "shop"},
         "search_provider": {"result_key": "items", "permission": "view_inventory"},
+        "fixed_asset_rules": {"kind": "tax_regime", "key": "acme_regime"},
+        "label_source": {"entity_type": "acme_thing", "label_key": "acme.thing", "keys": ["name"],
+                         "preset": {}, "permission": "view_fixed_assets"},
+        "import_target": {"kind": "acme_register", "href": "/acme/import"},
     }.get(slot, {"label": "L"})
     if slot in lint.HANDLER_KEYWORDS:
         entry = {**entry, "handler": "{pkg}.hooks:" + slot}
@@ -468,6 +475,24 @@ class TestCoreParity(unittest.TestCase):
                 "{pkg}/reexport.py": "from .sig import handler\n"}))
             cases.append(_slot_case(slot, {"handler": "{pkg}.sig:alias"}, {
                 "{pkg}/sig.py": f"async def handler({kw}, more):\n    return None\n\n\nalias = handler\n"}))
+        self.assertParity(cases)
+
+    def test_fixed_assets_contract(self):
+        """The public fixed-assets contract loads in both, the slots and manifest flag
+        Celerp keeps for its own modules are refused by both, and so are the journal
+        internals."""
+        nav = {**_base("nav"), "probe_href": "/acme/probe", "permission": "view_fixed_assets"}
+        public = {slot: [_base(slot)] for slot in ("fixed_asset_rules", "label_source", "import_target")}
+        cases = [Case({**public, "nav": [nav]}, {"{pkg}/__init__.py": "", "{pkg}/hooks.py": HOOKS})]
+        cases += [_slot_case("nav", {**nav, "probe_href": path}) for path in PATHS]
+        cases += [_slot_case("label_source", {**_base("label_source"), "keys": keys})
+                  for keys in (["name"], [], [""], [1], ["name", None], "name")]
+        cases += [_slot_case(slot, _base(slot)) for slot in sorted(lint.FIRST_PARTY_SLOTS)]
+        cases += [Case({"nav": [_base("nav")]}, readable_when_off=value)
+                  for value in (False, True, None, "yes", 0, 1)]
+        cases += [_slot_case("fixed_asset_rules", {**_base("fixed_asset_rules"), "handler": "{pkg}.rules:sync_fn"},
+                             {"{pkg}/rules.py": f"import {name}\n" + HOOKS})
+                  for name in ("celerp.services.auto_je", "celerp.services.module_journals")]
         self.assertParity(cases)
 
     def test_chart_of_accounts_is_not_a_slot(self):
