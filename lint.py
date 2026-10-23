@@ -98,12 +98,14 @@ MANIFEST_FIELD_TYPES = {
     **dict.fromkeys(("name", "version", "display_name", "label", "description", "license",
                      "author", "min_celerp_version", "api_routes", "ui_routes", "migrations",
                      "table_prefix"), str),
-    **dict.fromkeys(("slots", "company_backup", "locales"), dict),
+    **dict.fromkeys(("slots", "company_backup", "locales", "help"), dict),
     "depends_on": list,
     "readable_when_off": bool,
 }
+# The one key Celerp reads out of a help declaration (loader.installed_help_dirs).
+HELP_KEYS = {"dir"}
 # Fields Celerp checks whenever they are declared, None included.
-CHECKED_WHEN_NONE = {"table_prefix", "readable_when_off"}
+CHECKED_WHEN_NONE = {"table_prefix", "readable_when_off", "help"}
 # An unknown key is not an error to the loader, it is simply ignored, which is why
 # it has to be an error here: a module whose gating key is misspelled ships wide
 # open and nothing says a word.
@@ -704,6 +706,8 @@ def _ignored_parts(manifest: dict) -> list[str]:
             hint = (" - core hides a nav entry by the role's \"permission\", so this "
                     "entry is visible to everyone" if key == "min_role" else "")
             problems.append(f"nav slot entry {index} has unknown key {key!r}{hint}")
+    for key in _unknown(manifest.get("help") or {}, HELP_KEYS):
+        problems.append(f"help has unknown key {key!r} - Celerp reads only \"dir\"")
     return problems
 
 
@@ -1116,6 +1120,27 @@ def _migrations_problems(manifest: dict, folder: Path) -> list[str]:
             for path in _migration_files(manifest, folder) if not _inside(path, folder)]
 
 
+def _help_problems(manifest: dict, folder: Path) -> list[str]:
+    """The loader's installed_help_dirs: help is {"dir": ...}, a non-empty path relative
+    to the module folder naming a folder inside it. Celerp skips the module's help
+    pages, with only a log line, when any of that is not so."""
+    if "help" not in manifest:
+        return []
+    entry = manifest["help"]
+    directory = entry.get("dir") if isinstance(entry, dict) else None
+    if not (isinstance(directory, str) and directory.strip()):
+        return ["help must say where the module's help pages are, as {\"dir\": "
+                "\"acme_thing/help\"} - Celerp skips the module's help pages without it"]
+    path = folder / directory
+    if not _inside(path, folder):
+        return [f"help dir {directory!r} is outside the module folder - Celerp skips the "
+                "module's help pages"]
+    if not path.is_dir():
+        return [f"help dir {directory!r} is not a folder in the module - Celerp skips the "
+                "module's help pages"]
+    return []
+
+
 def _migration_files(manifest: dict, folder: Path) -> list[Path]:
     """The files Celerp runs from the manifest's migrations package, in order
     (loader.module_migration_files): each .py file in it not starting with _."""
@@ -1366,6 +1391,7 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
     problems.extend(_import_name_problems(folder))
     problems.extend(_route_problems(manifest, folder))
     problems.extend(_migrations_problems(manifest, folder))
+    problems.extend(_help_problems(manifest, folder))
     problems.extend(_slot_problems(manifest, folder))
     problems.extend(_company_backup_problems(manifest, files))
     problems.extend(_source_graph_problems(manifest, folder))
