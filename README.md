@@ -104,6 +104,11 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    records, carried by a company backup) or `"exclude"` (this installation's state,
    such as stored credentials). Celerp refuses to back up a company while one of
    your tables is not listed.
+   To ship help pages, set the manifest's `help` to `{"dir": "your_thing/help"}`, a
+   folder inside the module with one JSON file per page (see
+   `acme-maintenance/acme_maintenance/help/overview.json`). Celerp lists them in
+   Help and Celerp AI reads them. A Celerp from before module help reads straight
+   past the key, so declaring it does not stop the module loading there.
 5. Copy `acme-maintenance/tests/conftest.py` and keep the suite honest. It stands
    the real API app and the real pages up against SQLite with nothing mocked, so
    a test failure means a user-visible failure.
