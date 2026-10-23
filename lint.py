@@ -105,7 +105,7 @@ MANIFEST_FIELD_TYPES = {
 # The one key Celerp reads out of a help declaration (loader.installed_help_dirs).
 HELP_KEYS = {"dir"}
 # Fields Celerp checks whenever they are declared, None included.
-CHECKED_WHEN_NONE = {"table_prefix", "readable_when_off"}
+CHECKED_WHEN_NONE = {"table_prefix", "readable_when_off", "help"}
 # An unknown key is not an error to the loader, it is simply ignored, which is why
 # it has to be an error here: a module whose gating key is misspelled ships wide
 # open and nothing says a word.
@@ -1126,7 +1126,8 @@ def _help_problems(manifest: dict, folder: Path) -> list[str]:
     pages, with only a log line, when any of that is not so."""
     if "help" not in manifest:
         return []
-    directory = manifest["help"].get("dir")
+    entry = manifest["help"]
+    directory = entry.get("dir") if isinstance(entry, dict) else None
     if not (isinstance(directory, str) and directory.strip()):
         return ["help must say where the module's help pages are, as {\"dir\": "
                 "\"acme_thing/help\"} - Celerp skips the module's help pages without it"]

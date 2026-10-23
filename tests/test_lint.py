@@ -1176,7 +1176,7 @@ class TestHelpDeclaration(unittest.TestCase):
         self.assertEqual(self._check({"dir": "thing/./help"}), ([], []))
 
     def test_without_a_folder_name(self):
-        for value in ({}, {"dir": ""}, {"dir": "  "}, {"dir": 3}, {"dir": None}, {"path": "thing/help"}):
+        for value in (None, {}, {"dir": ""}, {"dir": "  "}, {"dir": 3}, {"dir": None}, {"path": "thing/help"}):
             with self.subTest(value=value):
                 problems, _ = self._check(value)
                 self.assertTrue(any("help must say where" in p for p in problems), problems)

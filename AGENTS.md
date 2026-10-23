@@ -304,16 +304,16 @@ module uses both.
 Three of these rules are enforced, so a mistake surfaces before a restart rather
 than in front of a user:
 
-- Rule 1 and rule 5 are checked by `lint.py:1178` and `lint.py:696`, the slot
-  and table rules above by `lint.py:935` and `lint.py:1288`, the package name rule by
-  `lint.py:1269`, and the route module and migrations rules by `lint.py:1078` and
-  `lint.py:1102`. `tests/test_core_parity.py`
+- Rule 1 and rule 5 are checked by `lint.py:1203` and `lint.py:698`, the slot
+  and table rules above by `lint.py:939` and `lint.py:1313`, the package name rule by
+  `lint.py:1294`, and the route module and migrations rules by `lint.py:1082` and
+  `lint.py:1106`. `tests/test_core_parity.py`
   loads each case through Celerp's own loader and fails wherever lint and the loader
   disagree. Run
   `python lint.py acme-maintenance` (or your renamed folder) before every restart.
 - Rule 2 is checked by a test that renders every view and fails on any class core
   neither styles nor emits: `acme-maintenance/tests/test_render.py:344`.
-- The protected-import rule above is checked by `lint.py` as well (`lint.py:644`),
+- The protected-import rule above is checked by `lint.py` as well (`lint.py:646`),
   so you find out before a restart rather than from a module that will not load,
   and so is a shipped `requirements.txt`. `tests/test_core_parity.py` also checks
   that the three helpers keep the signatures this module calls them with.
@@ -355,14 +355,14 @@ Each `path:line` above, with the exact text of that line. Paths under `celerp/` 
 - `celerp/modules/migrations_runner.py:169`: `async def run_migration_phase(engine, admission: loader.Admission) -> loader.Admission:`
 - `celerp/services/app_paths.py:12`: `def is_app_local_path(path) -> bool:`
 - `celerp/services/permissions.py:57`: `PERMISSIONS: list[Permission] = [`
-- `lint.py:1078`: `def _route_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:1102`: `def _migrations_problems(manifest: dict, folder: Path) -> list[str]:`
-- `lint.py:1178`: `def _str_rendered_fragments(py_file: Path) -> list[str]:`
-- `lint.py:1269`: `def _import_name_problems(folder: Path) -> list[str]:`
-- `lint.py:1288`: `def _table_prefix_problems(manifest: dict) -> list[str]:`
-- `lint.py:644`: `def _protected_imports(py_file: Path) -> set[str]:`
-- `lint.py:696`: `def _ignored_parts(manifest: dict) -> list[str]:`
-- `lint.py:935`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:1082`: `def _route_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:1106`: `def _migrations_problems(manifest: dict, folder: Path) -> list[str]:`
+- `lint.py:1203`: `def _str_rendered_fragments(py_file: Path) -> list[str]:`
+- `lint.py:1294`: `def _import_name_problems(folder: Path) -> list[str]:`
+- `lint.py:1313`: `def _table_prefix_problems(manifest: dict) -> list[str]:`
+- `lint.py:646`: `def _protected_imports(py_file: Path) -> set[str]:`
+- `lint.py:698`: `def _ignored_parts(manifest: dict) -> list[str]:`
+- `lint.py:939`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
 - `ui/components/files.py:106`: `def files_section(`
 - `ui/components/shell.py:2529`: `def _allowed(item: dict) -> bool:`
 - `ui/components/shell.py:2726`: `def page_header(title: str, *actions: FT) -> FT:`
