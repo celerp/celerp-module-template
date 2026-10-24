@@ -76,6 +76,7 @@ from __future__ import annotations
 import ast
 import fnmatch
 import importlib.machinery
+import json
 import os
 import re
 import sys
@@ -1138,7 +1139,152 @@ def _help_problems(manifest: dict, folder: Path) -> list[str]:
     if not path.is_dir():
         return [f"help dir {directory!r} is not a folder in the module - Celerp skips the "
                 "module's help pages"]
-    return []
+    return _help_page_problems(path, str(manifest.get("name") or folder.name))
+
+
+# Celerp's help page format (celerp/help/schema.py), name for name: one JSON file
+# per page in the help folder. Celerp skips a page that breaks it, with only a log
+# line, so here each one is a problem.
+HELP_PAGE_KEYS = frozenset({"id", "title", "summary", "keywords", "routes", "permission",
+                            "order", "steps", "related"})
+HELP_STEP_KEYS = frozenset({"text", "labels", "image", "capture"})
+HELP_CAPTURE_KEYS = frozenset({"route", "selector", "actions"})
+HELP_ACTION_VERBS = frozenset({"click", "fill", "press", "wait"})
+HELP_MAX_TITLE = 120
+HELP_MAX_STEP_TEXT = 500
+HELP_MAX_STEPS = 20
+HELP_MAX_FILE_BYTES = 64 * 1024
+_HELP_ID = re.compile(r"^[a-z0-9-]+\.[a-z0-9-]+$")
+_HELP_PLACEHOLDER = re.compile(r"\{([a-z0-9_]+)\}")
+_HELP_IMAGE = re.compile(r"^img/[A-Za-z0-9][A-Za-z0-9_-]*\.webp$")
+
+
+def _help_page_problems(help_dir: Path, module: str) -> list[str]:
+    """Each page file Celerp would skip, and each id a page before it already took
+    (the registry keeps the first)."""
+    problems: list[str] = []
+    first: dict[str, str] = {}
+    for path in sorted(help_dir.glob("*.json")):
+        page_id, errors = _help_file_errors(path, module.removeprefix("celerp-"))
+        problems += [f"help page {path.name}: {e}" for e in errors]
+        if page_id in first:
+            problems.append(f"help page {path.name}: id {page_id!r} is already used by "
+                            f"{first[page_id]} - Celerp shows only the first")
+        elif page_id is not None:
+            first[page_id] = path.name
+    return problems
+
+
+def _help_file_errors(path: Path, prefix: str) -> tuple[str | None, list[str]]:
+    """(the page id, None) for a valid page, else (None, every reason) (schema.load_file)."""
+    try:
+        if path.stat().st_size > HELP_MAX_FILE_BYTES:
+            return None, [f"file is larger than {HELP_MAX_FILE_BYTES // 1024} KB"]
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, [f"not readable as JSON ({exc})"]
+    errors = help_page_errors(data, prefix)
+    return (None if errors else data["id"]), errors
+
+
+def _help_keys(where: str, data: dict, allowed: frozenset[str]) -> list[str]:
+    errors = [f"{where}unknown key {k!r}" for k in sorted(set(data) - allowed)]
+    errors += [f"{where}missing key {k!r}" for k in sorted(allowed - set(data))]
+    return errors
+
+
+def _help_str_list(value) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
+def _help_capture_errors(where: str, capture) -> list[str]:
+    if not isinstance(capture, dict):
+        return [f"{where}capture must be an object"]
+    errors = _help_keys(f"{where}capture ", capture, HELP_CAPTURE_KEYS)
+    if errors:
+        return errors
+    if not isinstance(capture["route"], str) or not capture["route"].startswith("/"):
+        errors.append(f"{where}capture route must be a path starting with /")
+    if not isinstance(capture["selector"], str) or not capture["selector"].strip():
+        errors.append(f"{where}capture selector must be a non-empty string")
+    actions = capture["actions"]
+    if not isinstance(actions, list):
+        return [*errors, f"{where}capture actions must be a list"]
+    for n, action in enumerate(actions, 1):
+        verbs = set(action) & HELP_ACTION_VERBS if isinstance(action, dict) else set()
+        extra = set(action) - HELP_ACTION_VERBS - {"value"} if isinstance(action, dict) else set()
+        if (len(verbs) != 1 or extra or not all(isinstance(v, str) for v in action.values())
+                or ("value" in action) != ("fill" in action)):
+            errors.append(f"{where}capture action {n} must be one of "
+                          '{"click": selector}, {"fill": selector, "value": text}, '
+                          '{"press": key} or {"wait": selector}')
+    return errors
+
+
+def _help_step_errors(n: int, step) -> list[str]:
+    where = f"step {n}: "
+    if not isinstance(step, dict):
+        return [f"{where}must be an object"]
+    errors = _help_keys(where, step, HELP_STEP_KEYS)
+    if errors:
+        return errors
+    text, labels, image = step["text"], step["labels"], step["image"]
+    if not isinstance(text, str) or not text.strip():
+        errors.append(f"{where}text must be a non-empty string")
+    elif len(text) > HELP_MAX_STEP_TEXT:
+        errors.append(f"{where}text is longer than {HELP_MAX_STEP_TEXT} characters")
+    if not isinstance(labels, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) and v for k, v in labels.items()):
+        errors.append(f"{where}labels must map each placeholder name to a catalog key")
+    elif isinstance(text, str):
+        names = set(_HELP_PLACEHOLDER.findall(text))
+        errors += [f"{where}placeholder {{{k}}} has no label" for k in sorted(names - set(labels))]
+        errors += [f"{where}label {k!r} is not used in the text" for k in sorted(set(labels) - names)]
+        if "{" in _HELP_PLACEHOLDER.sub("", text) or "}" in _HELP_PLACEHOLDER.sub("", text):
+            errors.append(f"{where}text has a brace that is not a {{name}} placeholder")
+    if image is not None and not (isinstance(image, str) and _HELP_IMAGE.match(image)):
+        errors.append(f"{where}image must be null or img/<file>.webp inside the help folder")
+    return [*errors, *_help_capture_errors(where, step["capture"])]
+
+
+def help_page_errors(data, prefix: str) -> list[str]:
+    """Every reason `data` is not a valid help page of the module whose page ids start
+    with `prefix` (schema.validate)."""
+    if not isinstance(data, dict):
+        return ["page must be a JSON object"]
+    errors = _help_keys("", data, HELP_PAGE_KEYS)
+    if errors:
+        return errors
+    page_id = data["id"]
+    if not isinstance(page_id, str) or not _HELP_ID.match(page_id):
+        errors.append("id must look like <module>.<page>, lower case letters, digits and -")
+    elif page_id.split(".", 1)[0] != prefix:
+        errors.append(f"id must start with {prefix!r}, the module that ships the page")
+    title = data["title"]
+    if not isinstance(title, str) or not title.strip():
+        errors.append("title must be a non-empty string")
+    elif len(title) > HELP_MAX_TITLE:
+        errors.append(f"title is longer than {HELP_MAX_TITLE} characters")
+    if not isinstance(data["summary"], str) or not data["summary"].strip():
+        errors.append("summary must be a non-empty string")
+    for key in ("keywords", "related"):
+        if not _help_str_list(data[key]):
+            errors.append(f"{key} must be a list of strings")
+    if not _help_str_list(data["routes"]) or not all(r.startswith("/") for r in data["routes"]):
+        errors.append("routes must be a list of paths starting with /")
+    if data["permission"] is not None and not isinstance(data["permission"], str):
+        errors.append("permission must be a permission key or null")
+    if not isinstance(data["order"], int) or isinstance(data["order"], bool):
+        errors.append("order must be a whole number")
+    steps = data["steps"]
+    if not isinstance(steps, list) or not steps:
+        errors.append("steps must be a non-empty list")
+    elif len(steps) > HELP_MAX_STEPS:
+        errors.append(f"a page has at most {HELP_MAX_STEPS} steps")
+    else:
+        for n, step in enumerate(steps, 1):
+            errors += _help_step_errors(n, step)
+    return errors
 
 
 def _migration_files(manifest: dict, folder: Path) -> list[Path]:

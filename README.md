@@ -109,6 +109,8 @@ That's the whole loop. Now change something in `ui_routes.py`, restart, and see 
    `acme-maintenance/acme_maintenance/help/overview.json`). Celerp lists them in
    Help and Celerp AI reads them. A Celerp from before module help reads straight
    past the key, so declaring it does not stop the module loading there.
+   `lint.py` checks every page against Celerp's help page format and names each
+   page Celerp would skip.
 5. Copy `acme-maintenance/tests/conftest.py` and keep the suite honest. It stands
    the real API app and the real pages up against SQLite with nothing mocked, so
    a test failure means a user-visible failure.
