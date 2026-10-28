@@ -132,11 +132,11 @@ compose `cell--{type}` at render time, so `cell--date` is core's even though no 
 file contains the string.
 
 **3. Use the shared components rather than a lookalike.** `page_header`
-(`ui/components/shell.py:3008`) puts search and actions in the header at the house
-size. `display_cell` (`ui/components/table.py:1208`) and `editable_cell`
-(`ui/components/table.py:974`) give you double-click-to-edit, ESC to cancel,
+(`ui/components/shell.py:3083`) puts search and actions in the header at the house
+size. `display_cell` (`ui/components/table.py:1211`) and `editable_cell`
+(`ui/components/table.py:977`) give you double-click-to-edit, ESC to cancel,
 save-on-blur, and `--` for an empty value, all pointed at your own routes through
-`patch_url` and `edit_url`. `files_section` (`ui/components/files.py:169`) renders
+`patch_url` and `edit_url`. `files_section` (`ui/components/files.py:166`) renders
 the house files block against any `base_url`. Every one of these is a place where a
 hand-rolled version would drift from the rest of the app the first time core changes.
 
@@ -147,7 +147,7 @@ the loader refuses a module whose slot entries name a key outside it, in either
 cannot invent one today. Pick the
 key that matches what the page does. The API router depends on `require_permission`
 (`acme-maintenance/acme_maintenance/routes.py:57`) and the sidebar hides an entry
-whose `permission` the role does not have (`ui/components/shell.py:2753`); the page
+whose `permission` the role does not have (`ui/components/shell.py:2825`); the page
 asks the same question so a viewer is never offered a control that would only fail.
 Hiding a control is presentation, never protection: the router is what stops a
 hand-made request.
@@ -161,7 +161,7 @@ keys. `api_routes` and `ui_routes` each name a file inside the module that defin
 its own `setup_api_routes` or `setup_ui_routes` (`celerp/modules/loader.py:695`). The
 manifest `name` must equal the module's folder name, start with a letter or digit, and
 hold only letters, digits, `-` and `_`, 64 characters at most
-(`celerp/modules/importer.py:88`). Every top-level manifest field must also hold the one type Celerp reads it as.
+(`celerp/modules/importer.py:89`). Every top-level manifest field must also hold the one type Celerp reads it as.
 `lint.py` reports an ignored key as its own kind of finding, separate from a
 problem the loader refuses, and exits 1 on either. A slot name is not like a key:
 the loader refuses a module that fills a slot Celerp does not read, and `lint.py`
@@ -218,9 +218,9 @@ positional-only, and no `*args` or `**kwargs` (`celerp/modules/loader.py:2513`).
 
 The tables a module creates must start with its `table_prefix`: at least 3
 characters, ending in `_`, and no table Celerp keeps for itself may start with it,
-so `label_`, `marketplace_` and `bank_` are taken (`celerp/modules/importer.py:251`). Two installed
+so `label_`, `marketplace_` and `bank_` are taken (`celerp/modules/importer.py:252`). Two installed
 modules' prefixes may not overlap either: neither prefix may be a prefix of the
-other (`celerp/modules/importer.py:325`). Only the installation knows the other
+other (`celerp/modules/importer.py:326`). Only the installation knows the other
 modules, so `lint.py` checks every rule here except that last one. A module whose
 code defines a table outside its prefix, or any table without one, is taken out
 before any table is created (`celerp/modules/loader.py:1977`).
@@ -234,7 +234,7 @@ be a name Python, Celerp, an installed package or another module already uses: n
 **6. New tables come from your models; changes to shipped tables come from
 migrations.** Module models register on Celerp's shared metadata when the loader
 imports them, and Celerp runs `create_all` after loading modules
-(`celerp/main.py:460`), so a new table appears on the next launch. A module that
+(`celerp/main.py:474`), so a new table appears on the next launch. A module that
 fails to load, or whose routes fail to register, gets none of its tables created
 (`celerp/modules/loader.py:1472`). `create_all`
 cannot alter an existing table, so any change to a table you have shipped is a
@@ -255,7 +255,7 @@ rather than serving a bare fragment as a document.
 renders an empty list, because "nothing here" and "we could not ask" are different
 facts and the user acts differently on each. A rejected edit comes back as the
 editor with the value still in it, marked `cell--error` and carrying the reason in
-its `title`, which is how core marks one (`ui/routes/inventory.py:2669`); a
+its `title`, which is how core marks one (`ui/routes/inventory.py:2664`); a
 toast on its own vanishes and leaves the refused value looking accepted. A list a
 user cannot load is not a list they should be told is empty.
 
@@ -333,13 +333,13 @@ Each `path:line` above, with the exact text of that line. Paths under `celerp/` 
 - `acme-maintenance/acme_maintenance/ui_routes.py:548`: `return HTMLResponse(to_xml(block),`
 - `acme-maintenance/acme_maintenance/ui_routes.py:96`: `CALENDAR_PRINT_CSS = read_resource(__file__, "resources/calendar-print.css").decode("utf-8")`
 - `acme-maintenance/tests/test_render.py:344`: `def test_all_emitted_classes_exist_in_core_css(env):`
-- `celerp/main.py:460`: `await create_tables(lifecycle_engine)`
+- `celerp/main.py:474`: `await create_tables(lifecycle_engine)`
 - `celerp/modules/api.py:25`: `async def api_request(`
 - `celerp/modules/api.py:52`: `def read_resource(module_file: str, relative_path: str) -> bytes:`
 - `celerp/modules/api.py:107`: `async def ai_query(`
-- `celerp/modules/importer.py:251`: `def reserved_tables(name: str) -> frozenset[str]:`
-- `celerp/modules/importer.py:325`: `def table_prefix_problem(name: str, prefix: object,`
-- `celerp/modules/importer.py:88`: `def _validate_name(name: str, *, official: bool = False) -> None:`
+- `celerp/modules/importer.py:252`: `def reserved_tables(name: str) -> frozenset[str]:`
+- `celerp/modules/importer.py:326`: `def table_prefix_problem(name: str, prefix: object,`
+- `celerp/modules/importer.py:89`: `def _validate_name(name: str, *, official: bool = False) -> None:`
 - `celerp/modules/loader.py:1472`: `def _drop_tables(names: set[str]) -> None:`
 - `celerp/modules/loader.py:1901`: `route_mod_path = manifest.get(manifest_key)`
 - `celerp/modules/loader.py:1977`: `def _stray_table_problem(manifest: dict) -> str | None:`
@@ -363,9 +363,9 @@ Each `path:line` above, with the exact text of that line. Paths under `celerp/` 
 - `lint.py:651`: `def _protected_imports(py_file: Path) -> set[str]:`
 - `lint.py:703`: `def _ignored_parts(manifest: dict) -> list[str]:`
 - `lint.py:944`: `def _slot_problems(manifest: dict, folder: Path) -> list[str]:`
-- `ui/components/files.py:169`: `def files_section(`
-- `ui/components/shell.py:2753`: `return [item for item in module_nav(settings) if slot_permission_allows(item, settings, role)]`
-- `ui/components/shell.py:3008`: `def page_header(title: str, *actions: FT) -> FT:`
-- `ui/components/table.py:1208`: `def display_cell(`
-- `ui/components/table.py:974`: `def editable_cell(`
-- `ui/routes/inventory.py:2669`: `edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()`
+- `ui/components/files.py:166`: `def files_section(`
+- `ui/components/shell.py:2825`: `return [item for item in module_nav(settings) if slot_permission_allows(item, settings, role)]`
+- `ui/components/shell.py:3083`: `def page_header(title: str, *actions: FT) -> FT:`
+- `ui/components/table.py:1211`: `def display_cell(`
+- `ui/components/table.py:977`: `def editable_cell(`
+- `ui/routes/inventory.py:2664`: `edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()`
