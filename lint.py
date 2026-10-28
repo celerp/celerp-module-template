@@ -167,16 +167,20 @@ MIN_VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
 MIN_TABLE_PREFIX_LEN = 3
 # Every table a table_prefix may not claim: Celerp's own tables, the tables of its
 # first-party modules (installed or not), alembic's schema stamp and the instance's
-# upgrade markers (celerp/modules/importer.py reserved_tables, Celerp 2.5.4). A prefix
+# upgrade markers (celerp/modules/importer.py reserved_tables, the Celerp CI pins). A prefix
 # any of these starts with is refused at install. Other installed modules' prefixes
 # and tables are refused too, which only the installation can tell.
 RESERVED_TABLES = frozenset({
-    "accounts", "ai_batch_jobs", "ai_conversations", "ai_messages", "alembic_version",
-    "bank_accounts", "bank_statement_lines", "companies", "connector_configs",
+    "accounts", "ai_batch_jobs", "ai_conversations", "ai_job_steps", "ai_messages",
+    "ai_usage", "alembic_version", "bank_accounts", "bank_statement_lines", "companies",
+    "company_peer_accounts", "company_peer_attention", "company_peer_deliveries",
+    "company_peer_grants", "company_peer_identities", "connector_configs",
     "connector_sources", "doc_share_tokens", "import_batches", "instance_meta",
     "label_templates", "ledger", "locations", "marketplace_configs",
-    "migration_cleanup_tasks", "migration_entity_maps", "migration_runs", "notification_reads",
-    "notifications", "outbound_queue", "payment_closures", "payment_recoveries", "projections",
+    "migration_attachment_fetches", "migration_batch_files", "migration_cleanup_tasks",
+    "migration_entity_maps", "migration_runs", "migration_templates",
+    "notification_reads", "notifications", "outbound_queue", "password_reset_notices",
+    "password_resets", "payment_closures", "payment_recoveries", "projections",
     "reconciliation_rules", "reconciliation_sessions", "session_registry",
     "supporter_badges", "sync_runs", "system_runtime_state", "unmatched_payments",
     "unmatched_refunds", "user_auth_state", "user_companies", "users", "work_centers",
