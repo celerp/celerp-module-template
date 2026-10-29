@@ -98,6 +98,13 @@ PLUGIN_MANIFEST = {
         "acme_equipment_file": "include",
     },
 
+    # ── Help ──────────────────────────────────────────────────────────────────
+    # The folder of this module's help pages, relative to the module folder and
+    # inside it: one JSON file per page. Celerp lists them in /help and the
+    # Celerp AI help tools read them; a Celerp from before module help reads
+    # straight past this key. See acme_maintenance/help/overview.json.
+    "help": {"dir": "acme_maintenance/help"},
+
     # ── depends_on ────────────────────────────────────────────────────────────
     # This template needs nothing. If your module depends on another module,
     # list its name in "depends_on". Celerp never installs Python packages for
