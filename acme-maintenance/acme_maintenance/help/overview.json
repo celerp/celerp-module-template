@@ -1,0 +1,18 @@
+{
+  "id": "acme-maintenance.overview",
+  "title": "Track equipment maintenance",
+  "summary": "The Maintenance page lists your company's equipment and shows what is due for service.",
+  "keywords": ["maintenance", "equipment", "service", "due"],
+  "routes": ["/maintenance"],
+  "permission": "view_inventory",
+  "order": 1,
+  "steps": [
+    {
+      "text": "Open Maintenance from the sidebar. Each row is one piece of equipment, with the date its next service is due.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/maintenance", "selector": "main", "actions": []}
+    }
+  ],
+  "related": []
+}

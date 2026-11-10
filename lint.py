@@ -76,6 +76,7 @@ from __future__ import annotations
 import ast
 import fnmatch
 import importlib.machinery
+import json
 import os
 import re
 import sys
@@ -98,12 +99,14 @@ MANIFEST_FIELD_TYPES = {
     **dict.fromkeys(("name", "version", "display_name", "label", "description", "license",
                      "author", "min_celerp_version", "api_routes", "ui_routes", "migrations",
                      "table_prefix"), str),
-    **dict.fromkeys(("slots", "company_backup", "locales"), dict),
+    **dict.fromkeys(("slots", "company_backup", "locales", "help"), dict),
     "depends_on": list,
     "readable_when_off": bool,
 }
+# The one key Celerp reads out of a help declaration (loader.installed_help_dirs).
+HELP_KEYS = {"dir"}
 # Fields Celerp checks whenever they are declared, None included.
-CHECKED_WHEN_NONE = {"table_prefix", "readable_when_off"}
+CHECKED_WHEN_NONE = {"table_prefix", "readable_when_off", "help"}
 # An unknown key is not an error to the loader, it is simply ignored, which is why
 # it has to be an error here: a module whose gating key is misspelled ships wide
 # open and nothing says a word.
@@ -164,16 +167,20 @@ MIN_VERSION_RE = re.compile(r"^\d+(\.\d+){0,2}$")
 MIN_TABLE_PREFIX_LEN = 3
 # Every table a table_prefix may not claim: Celerp's own tables, the tables of its
 # first-party modules (installed or not), alembic's schema stamp and the instance's
-# upgrade markers (celerp/modules/importer.py reserved_tables, Celerp 2.5.4). A prefix
+# upgrade markers (celerp/modules/importer.py reserved_tables, the Celerp CI pins). A prefix
 # any of these starts with is refused at install. Other installed modules' prefixes
 # and tables are refused too, which only the installation can tell.
 RESERVED_TABLES = frozenset({
-    "accounts", "ai_batch_jobs", "ai_conversations", "ai_messages", "alembic_version",
-    "bank_accounts", "bank_statement_lines", "companies", "connector_configs",
+    "accounts", "ai_batch_jobs", "ai_conversations", "ai_job_steps", "ai_messages",
+    "ai_usage", "alembic_version", "bank_accounts", "bank_statement_lines", "companies",
+    "company_peer_accounts", "company_peer_attention", "company_peer_deliveries",
+    "company_peer_grants", "company_peer_identities", "connector_configs",
     "connector_sources", "doc_share_tokens", "import_batches", "instance_meta",
     "label_templates", "ledger", "locations", "marketplace_configs",
-    "migration_cleanup_tasks", "migration_entity_maps", "migration_runs", "notification_reads",
-    "notifications", "outbound_queue", "payment_closures", "payment_recoveries", "projections",
+    "migration_attachment_fetches", "migration_batch_files", "migration_cleanup_tasks",
+    "migration_entity_maps", "migration_runs", "migration_templates",
+    "notification_reads", "notifications", "outbound_queue", "password_reset_notices",
+    "password_resets", "payment_closures", "payment_recoveries", "projections",
     "reconciliation_rules", "reconciliation_sessions", "session_registry",
     "supporter_badges", "sync_runs", "system_runtime_state", "unmatched_payments",
     "unmatched_refunds", "user_auth_state", "user_companies", "users", "work_centers",
@@ -704,6 +711,8 @@ def _ignored_parts(manifest: dict) -> list[str]:
             hint = (" - core hides a nav entry by the role's \"permission\", so this "
                     "entry is visible to everyone" if key == "min_role" else "")
             problems.append(f"nav slot entry {index} has unknown key {key!r}{hint}")
+    for key in _unknown(manifest.get("help") or {}, HELP_KEYS):
+        problems.append(f"help has unknown key {key!r} - Celerp reads only \"dir\"")
     return problems
 
 
@@ -1116,6 +1125,172 @@ def _migrations_problems(manifest: dict, folder: Path) -> list[str]:
             for path in _migration_files(manifest, folder) if not _inside(path, folder)]
 
 
+def _help_problems(manifest: dict, folder: Path) -> list[str]:
+    """The loader's installed_help_dirs: help is {"dir": ...}, a non-empty path relative
+    to the module folder naming a folder inside it. Celerp skips the module's help
+    pages, with only a log line, when any of that is not so."""
+    if "help" not in manifest:
+        return []
+    entry = manifest["help"]
+    directory = entry.get("dir") if isinstance(entry, dict) else None
+    if not (isinstance(directory, str) and directory.strip()):
+        return ["help must say where the module's help pages are, as {\"dir\": "
+                "\"acme_thing/help\"} - Celerp skips the module's help pages without it"]
+    path = folder / directory
+    if not _inside(path, folder):
+        return [f"help dir {directory!r} is outside the module folder - Celerp skips the "
+                "module's help pages"]
+    if not path.is_dir():
+        return [f"help dir {directory!r} is not a folder in the module - Celerp skips the "
+                "module's help pages"]
+    return _help_page_problems(path, str(manifest.get("name") or folder.name))
+
+
+# Celerp's help page format (celerp/help/schema.py), name for name: one JSON file
+# per page in the help folder. Celerp skips a page that breaks it, with only a log
+# line, so here each one is a problem.
+HELP_PAGE_KEYS = frozenset({"id", "title", "summary", "keywords", "routes", "permission",
+                            "order", "steps", "related"})
+HELP_STEP_KEYS = frozenset({"text", "labels", "image", "capture"})
+HELP_CAPTURE_KEYS = frozenset({"route", "selector", "actions"})
+HELP_ACTION_VERBS = frozenset({"click", "fill", "press", "wait"})
+HELP_MAX_TITLE = 120
+HELP_MAX_STEP_TEXT = 500
+HELP_MAX_STEPS = 20
+HELP_MAX_FILE_BYTES = 64 * 1024
+_HELP_ID = re.compile(r"^[a-z0-9-]+\.[a-z0-9-]+$")
+_HELP_PLACEHOLDER = re.compile(r"\{([a-z0-9_]+)\}")
+_HELP_IMAGE = re.compile(r"^img/[A-Za-z0-9][A-Za-z0-9_-]*\.webp$")
+
+
+def _help_page_problems(help_dir: Path, module: str) -> list[str]:
+    """Each page file Celerp would skip, and each id a page before it already took
+    (the registry keeps the first)."""
+    problems: list[str] = []
+    first: dict[str, str] = {}
+    for path in sorted(help_dir.glob("*.json")):
+        page_id, errors = _help_file_errors(path, module.removeprefix("celerp-"))
+        problems += [f"help page {path.name}: {e}" for e in errors]
+        if page_id in first:
+            problems.append(f"help page {path.name}: id {page_id!r} is already used by "
+                            f"{first[page_id]} - Celerp shows only the first")
+        elif page_id is not None:
+            first[page_id] = path.name
+    return problems
+
+
+def _help_file_errors(path: Path, prefix: str) -> tuple[str | None, list[str]]:
+    """(the page id, None) for a valid page, else (None, every reason) (schema.load_file)."""
+    try:
+        if path.stat().st_size > HELP_MAX_FILE_BYTES:
+            return None, [f"file is larger than {HELP_MAX_FILE_BYTES // 1024} KB"]
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, [f"not readable as JSON ({exc})"]
+    errors = help_page_errors(data, prefix)
+    return (None if errors else data["id"]), errors
+
+
+def _help_keys(where: str, data: dict, allowed: frozenset[str]) -> list[str]:
+    errors = [f"{where}unknown key {k!r}" for k in sorted(set(data) - allowed)]
+    errors += [f"{where}missing key {k!r}" for k in sorted(allowed - set(data))]
+    return errors
+
+
+def _help_str_list(value) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
+def _help_capture_errors(where: str, capture) -> list[str]:
+    if not isinstance(capture, dict):
+        return [f"{where}capture must be an object"]
+    errors = _help_keys(f"{where}capture ", capture, HELP_CAPTURE_KEYS)
+    if errors:
+        return errors
+    if not isinstance(capture["route"], str) or not capture["route"].startswith("/"):
+        errors.append(f"{where}capture route must be a path starting with /")
+    if not isinstance(capture["selector"], str) or not capture["selector"].strip():
+        errors.append(f"{where}capture selector must be a non-empty string")
+    actions = capture["actions"]
+    if not isinstance(actions, list):
+        return [*errors, f"{where}capture actions must be a list"]
+    for n, action in enumerate(actions, 1):
+        verbs = set(action) & HELP_ACTION_VERBS if isinstance(action, dict) else set()
+        extra = set(action) - HELP_ACTION_VERBS - {"value"} if isinstance(action, dict) else set()
+        if (len(verbs) != 1 or extra or not all(isinstance(v, str) for v in action.values())
+                or ("value" in action) != ("fill" in action)):
+            errors.append(f"{where}capture action {n} must be one of "
+                          '{"click": selector}, {"fill": selector, "value": text}, '
+                          '{"press": key} or {"wait": selector}')
+    return errors
+
+
+def _help_step_errors(n: int, step) -> list[str]:
+    where = f"step {n}: "
+    if not isinstance(step, dict):
+        return [f"{where}must be an object"]
+    errors = _help_keys(where, step, HELP_STEP_KEYS)
+    if errors:
+        return errors
+    text, labels, image = step["text"], step["labels"], step["image"]
+    if not isinstance(text, str) or not text.strip():
+        errors.append(f"{where}text must be a non-empty string")
+    elif len(text) > HELP_MAX_STEP_TEXT:
+        errors.append(f"{where}text is longer than {HELP_MAX_STEP_TEXT} characters")
+    if not isinstance(labels, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) and v for k, v in labels.items()):
+        errors.append(f"{where}labels must map each placeholder name to a catalog key")
+    elif isinstance(text, str):
+        names = set(_HELP_PLACEHOLDER.findall(text))
+        errors += [f"{where}placeholder {{{k}}} has no label" for k in sorted(names - set(labels))]
+        errors += [f"{where}label {k!r} is not used in the text" for k in sorted(set(labels) - names)]
+        if "{" in _HELP_PLACEHOLDER.sub("", text) or "}" in _HELP_PLACEHOLDER.sub("", text):
+            errors.append(f"{where}text has a brace that is not a {{name}} placeholder")
+    if image is not None and not (isinstance(image, str) and _HELP_IMAGE.match(image)):
+        errors.append(f"{where}image must be null or img/<file>.webp inside the help folder")
+    return [*errors, *_help_capture_errors(where, step["capture"])]
+
+
+def help_page_errors(data, prefix: str) -> list[str]:
+    """Every reason `data` is not a valid help page of the module whose page ids start
+    with `prefix` (schema.validate)."""
+    if not isinstance(data, dict):
+        return ["page must be a JSON object"]
+    errors = _help_keys("", data, HELP_PAGE_KEYS)
+    if errors:
+        return errors
+    page_id = data["id"]
+    if not isinstance(page_id, str) or not _HELP_ID.match(page_id):
+        errors.append("id must look like <module>.<page>, lower case letters, digits and -")
+    elif page_id.split(".", 1)[0] != prefix:
+        errors.append(f"id must start with {prefix!r}, the module that ships the page")
+    title = data["title"]
+    if not isinstance(title, str) or not title.strip():
+        errors.append("title must be a non-empty string")
+    elif len(title) > HELP_MAX_TITLE:
+        errors.append(f"title is longer than {HELP_MAX_TITLE} characters")
+    if not isinstance(data["summary"], str) or not data["summary"].strip():
+        errors.append("summary must be a non-empty string")
+    for key in ("keywords", "related"):
+        if not _help_str_list(data[key]):
+            errors.append(f"{key} must be a list of strings")
+    if not _help_str_list(data["routes"]) or not all(r.startswith("/") for r in data["routes"]):
+        errors.append("routes must be a list of paths starting with /")
+    if data["permission"] is not None and not isinstance(data["permission"], str):
+        errors.append("permission must be a permission key or null")
+    if not isinstance(data["order"], int) or isinstance(data["order"], bool):
+        errors.append("order must be a whole number")
+    steps = data["steps"]
+    if not isinstance(steps, list) or not steps:
+        errors.append("steps must be a non-empty list")
+    elif len(steps) > HELP_MAX_STEPS:
+        errors.append(f"a page has at most {HELP_MAX_STEPS} steps")
+    else:
+        for n, step in enumerate(steps, 1):
+            errors += _help_step_errors(n, step)
+    return errors
+
+
 def _migration_files(manifest: dict, folder: Path) -> list[Path]:
     """The files Celerp runs from the manifest's migrations package, in order
     (loader.module_migration_files): each .py file in it not starting with _."""
@@ -1366,6 +1541,7 @@ def check(folder: Path) -> tuple[list[str], list[str]]:
     problems.extend(_import_name_problems(folder))
     problems.extend(_route_problems(manifest, folder))
     problems.extend(_migrations_problems(manifest, folder))
+    problems.extend(_help_problems(manifest, folder))
     problems.extend(_slot_problems(manifest, folder))
     problems.extend(_company_backup_problems(manifest, files))
     problems.extend(_source_graph_problems(manifest, folder))

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import os
 import pathlib
 import re
@@ -713,7 +714,7 @@ class TestManifestFieldTypes(unittest.TestCase):
                                         "description", "license", "author",
                                         "min_celerp_version", "api_routes", "ui_routes",
                                         "migrations", "table_prefix")},
-        **{field: _NOT_DICT for field in ("slots", "company_backup", "locales")},
+        **{field: _NOT_DICT for field in ("slots", "company_backup", "locales", "help")},
         "depends_on": ("acme-base", 1, True, {"acme-base": 1}, ("acme-base",),
                        ["acme-base", 1], [None], [["acme-base"]]),
         "readable_when_off": ("yes", 0, 1, [], {}),
@@ -1157,6 +1158,140 @@ class TestMigrationsPackage(unittest.TestCase):
             f / "thing" / "migrations" / "_helper.py").symlink_to(outside / "evil.py"))
         self.assertTrue(any("_helper.py" in p and "link" in p for p in problems), problems)
 
+
+
+class TestHelpDeclaration(unittest.TestCase):
+    """help names a folder of help pages inside the module (loader.installed_help_dirs);
+    Celerp skips the module's help pages, with only a log line, when it does not."""
+
+    def _check(self, help_value, setup=None) -> tuple[list[str], list[str]]:
+        folder = _module("acme-thing", extra=f'"help": {help_value!r},')
+        (folder / "thing" / "help").mkdir()
+        if setup:
+            setup(folder)
+        return lint.check(folder)
+
+    def test_a_folder_inside_the_module(self):
+        self.assertEqual(self._check({"dir": "thing/help"}), ([], []))
+        self.assertEqual(self._check({"dir": "thing/./help"}), ([], []))
+
+    def test_without_a_folder_name(self):
+        for value in (None, {}, {"dir": ""}, {"dir": "  "}, {"dir": 3}, {"dir": None}, {"path": "thing/help"}):
+            with self.subTest(value=value):
+                problems, _ = self._check(value)
+                self.assertTrue(any("help must say where" in p for p in problems), problems)
+
+    def test_not_a_dict(self):
+        for value in ("thing/help", ["thing/help"], True):
+            with self.subTest(value=value):
+                problems, _ = self._check(value)
+                self.assertTrue(any(p.startswith("help must be a dict") for p in problems), problems)
+
+    def test_outside_the_module(self):
+        for value in ("../elsewhere", "/tmp", "thing/../../elsewhere"):
+            with self.subTest(value=value):
+                problems, _ = self._check({"dir": value})
+                self.assertTrue(any("outside the module folder" in p for p in problems), problems)
+
+    def test_a_link_to_a_folder_outside_the_module(self):
+        outside = pathlib.Path(tempfile.mkdtemp())
+        _TEMP_DIRS.append(outside)
+        problems, _ = self._check({"dir": "thing/linked"},
+                                  lambda f: (f / "thing" / "linked").symlink_to(outside))
+        self.assertTrue(any("outside the module folder" in p for p in problems), problems)
+
+    def test_not_a_folder(self):
+        problems, _ = self._check({"dir": "thing/missing"})
+        self.assertTrue(any("is not a folder in the module" in p for p in problems), problems)
+        problems, _ = self._check({"dir": "thing/api_routes.py"})
+        self.assertTrue(any("is not a folder in the module" in p for p in problems), problems)
+
+    def test_keys_celerp_does_not_read(self):
+        problems, ignored = self._check({"dir": "thing/help", "pages": ["a.json"]})
+        self.assertEqual(problems, [])
+        self.assertEqual(ignored, ["help has unknown key 'pages' - Celerp reads only \"dir\""])
+
+    def test_template_ships_a_help_page(self):
+        help_dir = MODULE / lint._load_manifest(MODULE / "__init__.py")[0]["help"]["dir"]
+        pages = sorted(help_dir.glob("*.json"))
+        self.assertTrue(pages)
+        for page in pages:
+            data = json.loads(page.read_text(encoding="utf-8"))
+            self.assertTrue(data["id"].startswith(f"{MODULE.name}."), data["id"])
+
+
+def _help_page(**changes) -> dict:
+    """A valid help page for the module "acme-thing", with `changes` applied (None removes a key)."""
+    page = {"id": "acme-thing.start", "title": "Start", "summary": "Where to begin.",
+            "keywords": [], "routes": ["/thing"], "permission": None, "order": 1,
+            "steps": [{"text": "Open {page}.", "labels": {"page": "thing.nav"}, "image": None,
+                       "capture": {"route": "/thing", "selector": "main", "actions": []}}],
+            "related": []}
+    page.update(changes)
+    return {k: v for k, v in page.items() if v is not None or k == "permission"}
+
+
+class TestHelpPages(unittest.TestCase):
+    """Every page file in the help folder is held to Celerp's page format
+    (celerp/help/schema.py): Celerp skips a page that breaks it, with only a log line."""
+
+    def _check(self, *pages, raw: dict | None = None) -> list[str]:
+        folder = _module("acme-thing", extra='"help": {"dir": "thing/help"},')
+        help_dir = folder / "thing" / "help"
+        help_dir.mkdir()
+        for n, page in enumerate(pages):
+            (help_dir / f"p{n}.json").write_text(json.dumps(page), encoding="utf-8")
+        for name, text in (raw or {}).items():
+            (help_dir / name).write_bytes(text if isinstance(text, bytes) else text.encode())
+        problems, _ = lint.check(folder)
+        return [p for p in problems if p.startswith("help page")]
+
+    def test_valid_pages_pass(self):
+        self.assertEqual(self._check(_help_page(), _help_page(id="acme-thing.next")), [])
+
+    def test_each_broken_page_is_named(self):
+        cases = {
+            "id": _help_page(id="other.start"),
+            "unknown key": _help_page(colour="red"),
+            "missing key": _help_page(summary=None),
+            "title": _help_page(title=""),
+            "routes": _help_page(routes=["thing"]),
+            "order": _help_page(order=True),
+            "steps": _help_page(steps=[]),
+            "placeholder": _help_page(steps=[{"text": "Open {page}.", "labels": {}, "image": None,
+                                              "capture": {"route": "/t", "selector": "m", "actions": []}}]),
+            "image": _help_page(steps=[{"text": "Open.", "labels": {}, "image": "../x.png",
+                                        "capture": {"route": "/t", "selector": "m", "actions": []}}]),
+            "action": _help_page(steps=[{"text": "Open.", "labels": {}, "image": None,
+                                         "capture": {"route": "/t", "selector": "m",
+                                                     "actions": [{"click": "a", "value": "b"}]}}]),
+        }
+        for what, page in cases.items():
+            with self.subTest(what=what):
+                problems = self._check(page)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertTrue(problems[0].startswith("help page p0.json: "), problems)
+
+    def test_a_file_celerp_cannot_read(self):
+        for raw in ({"bad.json": "{not json"}, {"bad.json": b"\xff\xfe"}, {"bad.json": "[]"},
+                    {"bad.json": "x" * (64 * 1024 + 1)}):
+            with self.subTest(raw=list(raw.values())[0][:12]):
+                problems = self._check(raw=raw)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertTrue(problems[0].startswith("help page bad.json: "), problems)
+
+    def test_the_same_id_twice(self):
+        problems = self._check(_help_page(), _help_page())
+        self.assertEqual(problems, ["help page p1.json: id 'acme-thing.start' is already "
+                                    "used by p0.json - Celerp shows only the first"])
+
+    def test_only_json_files_are_pages(self):
+        self.assertEqual(self._check(raw={"notes.txt": "not a page"}), [])
+
+    def test_the_template_pages_pass(self):
+        help_dir = MODULE / lint._load_manifest(MODULE / "__init__.py")[0]["help"]["dir"]
+        self.assertTrue(sorted(help_dir.glob("*.json")))
+        self.assertEqual([p for p in lint.check(MODULE)[0] if p.startswith("help page")], [])
 
 
 class TestModuleTree(unittest.TestCase):

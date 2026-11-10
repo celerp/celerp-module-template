@@ -26,6 +26,7 @@ import ast
 import importlib.util
 import inspect
 import itertools
+import json
 import os
 import pathlib
 import sys
@@ -912,6 +913,75 @@ class TestCoreParity(unittest.TestCase):
         # Every slot a core rule names is a slot lint knows.
         named = set(loader._CALLABLE_SLOTS) | set(loader._DESTINATION_KEYS) | set(loader._SLOT_VALIDATORS)
         self.assertLessEqual(named, lint.SLOT_NAMES)
+
+
+try:
+    from celerp.help import schema as help_schema
+except ImportError:
+    help_schema = None
+
+
+@unittest.skipUnless(help_schema, "needs a Celerp with module help (celerp.help.schema)")
+class TestHelpPageParity(unittest.TestCase):
+    """lint.py's copy of the help page format against celerp/help/schema.py: the same
+    page gets the same reasons, word for word, and the limits match."""
+
+    STEP = {"text": "Open {page}.", "labels": {"page": "thing.nav"}, "image": None,
+            "capture": {"route": "/thing", "selector": "main", "actions": []}}
+    PAGE = {"id": "acme-thing.start", "title": "Start", "summary": "Where to begin.",
+            "keywords": [], "routes": ["/thing"], "permission": None, "order": 1,
+            "steps": [STEP], "related": []}
+
+    def _pages(self):
+        yield from SHAPES
+        yield self.PAGE
+        for key in self.PAGE:
+            yield {k: v for k, v in self.PAGE.items() if k != key}
+            for shape in SHAPES:
+                yield {**self.PAGE, key: shape}
+        yield {**self.PAGE, "extra": 1}
+        for value in ("other.start", "acme-thing", "Acme-thing.start", "x" * 121,
+                      ["thing"], ["/a", 1]):
+            yield {**self.PAGE, "id": value}
+            yield {**self.PAGE, "title": value}
+            yield {**self.PAGE, "routes": value}
+        yield {**self.PAGE, "steps": [self.STEP] * 21}
+        for step_key in self.STEP:
+            yield {**self.PAGE, "steps": [{k: v for k, v in self.STEP.items() if k != step_key}]}
+            for shape in SHAPES:
+                yield {**self.PAGE, "steps": [{**self.STEP, step_key: shape}]}
+        for text, labels in (("x" * 501, {}), ("{a} {b}", {"a": "k"}), ("plain", {"a": "k"}),
+                             ("a { b", {}), ("{A}", {}), ("{a}", {"a": ""})):
+            yield {**self.PAGE, "steps": [{**self.STEP, "text": text, "labels": labels}]}
+        for image in ("img/a.webp", "img/a.png", "../a.webp", "img/sub/a.webp", "img/_a.webp"):
+            yield {**self.PAGE, "steps": [{**self.STEP, "image": image}]}
+        capture = self.STEP["capture"]
+        for key in capture:
+            yield {**self.PAGE, "steps": [{**self.STEP, "capture": {
+                k: v for k, v in capture.items() if k != key}}]}
+            for shape in SHAPES:
+                yield {**self.PAGE, "steps": [{**self.STEP, "capture": {**capture, key: shape}}]}
+        for action in ({"click": "a"}, {"fill": "a", "value": "b"}, {"fill": "a"},
+                       {"click": "a", "value": "b"}, {"click": "a", "press": "b"},
+                       {"wait": 1}, {"tap": "a"}, {}, "click"):
+            yield {**self.PAGE, "steps": [{**self.STEP, "capture": {**capture, "actions": [action]}}]}
+
+    def test_the_same_reasons(self):
+        for n, page in enumerate(self._pages()):
+            page = json.loads(json.dumps(page))  # a page is read from a JSON file
+            with self.subTest(n=n, page=page):
+                _, expected = help_schema.validate(page, pathlib.Path("."), "acme-thing")
+                self.assertEqual(lint.help_page_errors(page, "acme-thing"), expected)
+
+    def test_the_same_limits(self):
+        for name in ("PAGE_KEYS", "STEP_KEYS", "CAPTURE_KEYS", "ACTION_VERBS", "MAX_TITLE",
+                     "MAX_STEP_TEXT", "MAX_STEPS", "MAX_FILE_BYTES"):
+            with self.subTest(name=name):
+                self.assertEqual(getattr(lint, f"HELP_{name}"), getattr(help_schema, name))
+        for name in ("ID", "PLACEHOLDER", "IMAGE"):
+            with self.subTest(name=name):
+                self.assertEqual(getattr(lint, f"_HELP_{name}").pattern,
+                                 getattr(help_schema, f"_{name}" if name != "PLACEHOLDER" else name).pattern)
 
 
 if __name__ == "__main__":
